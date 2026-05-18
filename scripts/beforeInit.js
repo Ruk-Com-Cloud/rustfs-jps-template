@@ -1,13 +1,14 @@
 /**
- * onBeforeInit — runs before provisioning.
- *  - Pin the RustFS image from configs/vers.yaml globals (rustfs_image_repo
- *    + rustfs_default_tag) -> exposed as ${globals.RUSTFS_IMAGE}.
- *  - Guard the EXPERIMENTAL cluster path (RustFS distributed is beta-unstable;
- *    needs >=4 nodes — PRD FR-2.3 / NFR-5 / D3 risk acceptance).
+ * onBeforeInit — guard the EXPERIMENTAL cluster path only.
+ *
+ * The RustFS image is NOT set here: node topology is evaluated before
+ * script-set globals exist, so routing the image through an
+ * onBeforeInit global produced a literal "${globals.RUSTFS_IMAGE}:latest"
+ * ("invalid reference format"). The image is resolved directly from the
+ * configs/vers.yaml mixin globals in nodes.cp.image instead.
  *
  * Cloud Scripting JS: return { result: 0 } to continue; result != 0 aborts.
- * settings.* are available; nodeCount only exists when topology == cluster
- * (it is a showIf child of topology).
+ * nodeCount only exists when topology == cluster (showIf child of topology).
  */
 
 var topology   = '${settings.topology}';
@@ -26,11 +27,4 @@ if (topology === 'cluster') {
 	}
 }
 
-return {
-	result: 0,
-	onAfterReturn: {
-		setGlobals: {
-			RUSTFS_IMAGE: '${globals.rustfs_image_repo}:${globals.rustfs_default_tag}'
-		}
-	}
-};
+return { result: 0 };
