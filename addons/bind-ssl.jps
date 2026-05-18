@@ -4,7 +4,7 @@
 type: update
 id: rustfs-bind-ssl
 name: Bind SSL / Issue Certificate
-baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
 
 settings:
   main:

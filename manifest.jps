@@ -27,8 +27,8 @@ categories:
 homepage: https://github.com/Ruk-Com-Cloud/rustfs-jps-template   # [TODO] set real repo URL
 
 # baseUrl pins all relative scripts/configs to a release tag (research: jelastic-jps
-# convention). master = dev; releases override this to the vX.Y.Z tag.
-baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master
+# convention). main = dev; releases override this to the vX.Y.Z tag.
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
 
 # Single source of version truth — provides globals.rustfs_image_repo /
 # rustfs_default_tag / rustfs_allowlist (PRD FR-1.5 / FR-5.1).

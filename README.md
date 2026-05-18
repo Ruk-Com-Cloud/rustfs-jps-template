@@ -6,7 +6,7 @@
 
 One-click **S3-compatible object storage** (RustFS · Rust · Apache-2.0) for the Jelastic/Virtuozzo Application Platform — with built-in HTTPS/domain mapping and a safe long-term version-management workflow.
 
-[![Deploy to Ruk-Com](https://github.com/Ruk-Com-Cloud/simple-jps/blob/main/deploy-to-ruk-com.png?raw=true)](https://app.manage.ruk-com.cloud/?jps=https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master/manifest.jps)
+[![Deploy to Ruk-Com](https://github.com/Ruk-Com-Cloud/simple-jps/blob/main/deploy-to-ruk-com.png?raw=true)](https://app.manage.ruk-com.cloud/?jps=https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main/manifest.jps)
 
 **[English](#english) · [ภาษาไทย](#ภาษาไทย)**
 
@@ -24,13 +24,13 @@ One-click **S3-compatible object storage** (RustFS · Rust · Apache-2.0) for th
 
 Click the **Deploy to Ruk-Com** button above, or:
 
-[![Deploy to Ruk-Com](https://github.com/Ruk-Com-Cloud/simple-jps/blob/main/deploy-to-ruk-com.png?raw=true)](https://app.manage.ruk-com.cloud/?jps=https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master/manifest.jps)
+[![Deploy to Ruk-Com](https://github.com/Ruk-Com-Cloud/simple-jps/blob/main/deploy-to-ruk-com.png?raw=true)](https://app.manage.ruk-com.cloud/?jps=https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main/manifest.jps)
 
 **Or import manually:**
 
 1. Open your Ruk-Com / Jelastic dashboard → **Import** → **JPS**
 2. Use this URL:
-   `https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master/manifest.jps`
+   `https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main/manifest.jps`
 3. Click **Import** and follow the install wizard
 
 ### About
@@ -83,7 +83,7 @@ Forced generated credentials (no default `rustfsadmin` reaching prod), console n
 
 ### Release process (ruk-com Ops)
 
-`master` = dev. To ship a new RustFS version: run CI against the candidate tag → on pass, add the tag to `configs/vers.yaml` allowlist + the `change-version.jps` picker → cut Git tag `vX.Y.Z` → point the marketplace/deploy link at that tag. Existing environments do **not** auto-upgrade.
+`main` = dev. To ship a new RustFS version: run CI against the candidate tag → on pass, add the tag to `configs/vers.yaml` allowlist + the `change-version.jps` picker → cut Git tag `vX.Y.Z` → point the marketplace/deploy link at that tag. Existing environments do **not** auto-upgrade.
 
 ### Known `[VERIFY]` items before release
 
@@ -101,13 +101,13 @@ The template (this repo) — see `LICENSE`. RustFS itself is Apache-2.0 (separat
 
 กดปุ่ม **Deploy to Ruk-Com** ด้านบน หรือ:
 
-[![Deploy to Ruk-Com](https://github.com/Ruk-Com-Cloud/simple-jps/blob/main/deploy-to-ruk-com.png?raw=true)](https://app.manage.ruk-com.cloud/?jps=https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master/manifest.jps)
+[![Deploy to Ruk-Com](https://github.com/Ruk-Com-Cloud/simple-jps/blob/main/deploy-to-ruk-com.png?raw=true)](https://app.manage.ruk-com.cloud/?jps=https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main/manifest.jps)
 
 **หรือ import เอง:**
 
 1. เปิด dashboard Ruk-Com / Jelastic → **Import** → **JPS**
 2. ใช้ URL นี้:
-   `https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master/manifest.jps`
+   `https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main/manifest.jps`
 3. กด **Import** แล้วทำตาม wizard ติดตั้ง
 
 ### เกี่ยวกับ template นี้
@@ -160,7 +160,7 @@ S3 ใช้ **path-style เท่านั้น** — ตั้ง client เ
 
 ### กระบวนการออกเวอร์ชัน (ทีม ruk-com)
 
-`master` = dev ออกเวอร์ชันใหม่: รัน CI กับ tag candidate → ผ่านแล้วเพิ่ม tag เข้า allowlist `configs/vers.yaml` + picker ใน `change-version.jps` → cut Git tag `vX.Y.Z` → ชี้ลิงก์ deploy/marketplace ไป tag นั้น — environment เดิมจะไม่อัปเกรดอัตโนมัติ
+`main` = dev ออกเวอร์ชันใหม่: รัน CI กับ tag candidate → ผ่านแล้วเพิ่ม tag เข้า allowlist `configs/vers.yaml` + picker ใน `change-version.jps` → cut Git tag `vX.Y.Z` → ชี้ลิงก์ deploy/marketplace ไป tag นั้น — environment เดิมจะไม่อัปเกรดอัตโนมัติ
 
 ### รายการ `[VERIFY]` ที่ต้องเช็คก่อนปล่อยจริง
 
