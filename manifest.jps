@@ -96,11 +96,11 @@ settings:
 # Explicit NGINX LB node (bl) is MANDATORY: the Let's Encrypt add-on cannot
 # bind a custom Docker node and delegates :443 to jem ssl/SLB, so the LB owns
 # TLS + the SigV4-safe proxy contract (PRD FR-3.2 / research ADR-2).
-# nodeType 'nginx-dockerized' verified as the standalone NGINX balancer.
+# nodeType 'nginx' = the standalone NGINX balancer (confirmed on live env).
 # ---------------------------------------------------------------------
 nodes:
   - nodeGroup: bl
-    nodeType: nginx-dockerized
+    nodeType: nginx
     displayName: Load Balancer
     count: 1
     fixedCloudlets: 1
