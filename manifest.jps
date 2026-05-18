@@ -43,7 +43,11 @@ globals:
   # JS deployHook the Let's Encrypt add-on runs post-issue (writes our :443
   # vhost — see scripts/deployHook.js / addons/bind-ssl.jps).
   DEPLOY_HOOK_JS: ${baseUrl}/scripts/deployHook.js
-  # RUSTFS_IMAGE is set by onBeforeInit from vers.yaml globals.
+  # Image is resolved directly from the vers.yaml mixin globals
+  # (rustfs_image_repo + rustfs_default_tag) — see nodes.cp.image.
+  # NOTE: do NOT route the image through an onBeforeInit-set global; node
+  # topology is evaluated before script-set globals exist, which yields a
+  # literal "${globals.RUSTFS_IMAGE}:latest" -> "invalid reference format".
 
 onBeforeInit: scripts/beforeInit.js?_r=${fn.random}
 
@@ -104,7 +108,7 @@ nodes:
 
   - nodeGroup: cp
     displayName: RustFS
-    image: ${globals.RUSTFS_IMAGE}            # rustfs/rustfs:<pinned tag>
+    image: ${globals.rustfs_image_repo}:${globals.rustfs_default_tag}   # from configs/vers.yaml mixin (resolved at parse time)
     count: ${settings.nodeCount:1}            # 1 for single; >=4 for cluster
     cloudlets: 16
     volumes:
