@@ -1,0 +1,74 @@
+# CI: ephemeral install -> conformance + E2E smoke -> teardown (PRD FR-9.3).
+# A RustFS tag may enter configs/vers.yaml `rustfs_allowlist` ONLY after this passes
+# against it (FR-5.1 / OQ-6 acceptance baseline).
+#
+# Required repo secrets: JELASTIC_URL, JELASTIC_USER, JELASTIC_PASSWORD
+# [VERIFY] exact Jelastic CLI task/param names on the target edition before relying
+# on auto-teardown (research: destroy task name inferred, Medium confidence).
+name: ci
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: YAML lint manifests
+        run: |
+          pipx install yamllint || pip install yamllint
+          yamllint -d relaxed manifest.jps addons/*.jps configs/vers.yaml || true
+          # 'relaxed + || true': JPS allows placeholder syntax YAML linters dislike;
+          # real schema validation happens via Import>JPS editor on platform [VERIFY].
+
+  install-test-teardown:
+    runs-on: ubuntu-latest
+    needs: lint
+    if: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install package on ephemeral env
+        id: install
+        uses: DovnarAlexander/github-actions-jelastic@master
+        with:
+          jelastic_url: ${{ secrets.JELASTIC_URL }}
+          jelastic_username: ${{ secrets.JELASTIC_USER }}
+          jelastic_password: ${{ secrets.JELASTIC_PASSWORD }}
+          task: 'environment/control/installpackagebyurl'
+          # master build for CI; tag builds test the tagged manifest
+          params: >-
+            {"url":"https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/manifest.jps",
+             "envName":"ci-rustfs-${{ github.run_id }}",
+             "settings":{"topology":"single","attachPublicIp":"false"}}
+
+      - name: S3 E2E smoke (SigV4 / multipart / presigned via LB)
+        env:
+          S3_ENDPOINT: ${{ steps.install.outputs.s3_endpoint }}
+          S3_KEY: ${{ steps.install.outputs.s3_key }}
+          S3_SECRET: ${{ steps.install.outputs.s3_secret }}
+        run: |
+          # [VERIFY] wire real endpoint/keys out of the install response (parse
+          # the Jelastic API JSON). Until then this step is the integration gate.
+          chmod +x tests/s3-smoke.sh && ./tests/s3-smoke.sh
+
+      - name: Ceph s3-tests conformance (baseline, non-blocking until baseline set)
+        continue-on-error: true
+        run: |
+          git clone --depth 1 https://github.com/ceph/s3-tests.git
+          echo "[VERIFY] configure s3tests.conf against the env endpoint; record"
+          echo "per-tag pass-rate baseline (OQ-6) before promoting tag to allowlist."
+
+      - name: Teardown ephemeral env
+        if: always()
+        uses: DovnarAlexander/github-actions-jelastic@master
+        with:
+          jelastic_url: ${{ secrets.JELASTIC_URL }}
+          jelastic_username: ${{ secrets.JELASTIC_USER }}
+          jelastic_password: ${{ secrets.JELASTIC_PASSWORD }}
+          task: 'environment/control/deleteenv'
+          params: '{"envName":"ci-rustfs-${{ github.run_id }}"}'

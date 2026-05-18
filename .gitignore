@@ -1,0 +1,11 @@
+# BMad framework + internal planning artifacts — not part of the public JPS template
+_bmad/
+_bmad-output/
+.claude/
+design-artifacts/
+docs/
+
+# OS / editor
+.DS_Store
+*.swp
+*~

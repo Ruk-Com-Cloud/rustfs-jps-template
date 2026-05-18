@@ -1,0 +1,157 @@
+# =====================================================================
+# RustFS S3 Object Storage — Jelastic/Virtuozzo JPS (type: install)
+# Single-engine: RustFS only (NO runtime engine selector — PRD FR-1.1).
+# SeaweedFS is a SEPARATE sibling repo sharing this pattern.
+#
+# Spec: _bmad-output/planning-artifacts/prds/prd-rustfs-jps-template-2026-05-19/prd.md
+# Research (verified facts): _bmad-output/planning-artifacts/research/
+#   technical-jelastic-jps-rustfs-s3-version-management-research-2026-05-19.md
+#
+# [VERIFY] = must be validated on a real Jelastic/Virtuozzo env before release
+# (research §Implementation: dev = Import>JPS + in-editor validation; no offline validator).
+# =====================================================================
+type: install
+version: '1.7'                 # [VERIFY] platform/CS spec version on target edition
+id: rustfs-s3
+name: RustFS S3 Object Storage
+displayName: RustFS S3 Object Storage (Beta)
+description:
+  text: |
+    RustFS — S3-compatible object storage (Rust, Apache-2.0). One-click,
+    single-node by default, with built-in HTTPS/domain mapping and a safe
+    version-management workflow. BETA engine — opt-in.
+  short: S3-compatible object storage (RustFS, beta)
+logo: images/rustfs-logo.png      # [TODO] add asset before listing (FR-9.1)
+categories:
+  - apps/file-manager
+homepage: https://github.com/Ruk-Com-Cloud/rustfs-jps-template   # [TODO] set real repo URL
+
+# baseUrl pins all relative scripts/configs to a release tag (research: jelastic-jps
+# convention). master = dev; releases override this to the vX.Y.Z tag.
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/master
+
+# Single source of version truth — provides globals.rustfs_image_repo /
+# rustfs_default_tag / rustfs_allowlist (PRD FR-1.5 / FR-5.1).
+mixins:
+  - configs/vers.yaml
+
+# Secrets generated at runtime, never stored in repo/manifest (PRD FR-7.1/FR-7.5).
+globals:
+  RUSTFS_ACCESS_KEY: ${fn.password(20)}
+  RUSTFS_SECRET_KEY: ${fn.password(40)}
+  S3_PORT: 9000
+  CONSOLE_PORT: 9001
+  DATA_DIR: /data
+  # RUSTFS_IMAGE / PROTOCOL / PUBLIC_IP_REQUESTED are set by onBeforeInit.
+
+onBeforeInit: scripts/beforeInit.js?_r=${fn.random}
+
+# ---------------------------------------------------------------------
+# Install wizard (PRD F2/F3). Conditional show/hide is finalized at
+# onBeforeInit on the target platform — [VERIFY] dynamic field API.
+# ---------------------------------------------------------------------
+settings:
+  fields:
+    - name: topology
+      type: list
+      caption: Topology
+      values:
+        single: Single node (recommended, production-safe)
+        cluster: Cluster / distributed (EXPERIMENTAL — RustFS beta)
+      default: single
+      required: true
+    - name: nodeCount
+      type: list
+      caption: Cluster size (cluster only)
+      values:
+        4: 4 nodes
+        8: 8 nodes
+        16: 16 nodes
+      default: 4
+      showIf:
+        topology: [ cluster ]
+    - name: attachPublicIp
+      type: list
+      caption: Public IP
+      values:
+        'true': 'Attach public IP (recommended — required for custom-domain HTTPS)'
+        'false': 'No public IP (use Shared LB / env domain)'
+      default: 'true'
+      required: true
+    - name: externalDomain
+      type: string
+      caption: Your S3 domain (e.g. s3.example.com)
+      vtype: domain
+      required: false
+      showIf:
+        attachPublicIp: [ 'true' ]
+
+# ---------------------------------------------------------------------
+# Topology — explicit LB node (bl) is MANDATORY: Let's Encrypt cannot bind
+# a custom Docker node, so the LB owns TLS + the SigV4-safe proxy contract
+# (PRD FR-3.2 / research ADR-2).
+# ---------------------------------------------------------------------
+nodes:
+  - nodeGroup: bl
+    nodeType: nginx-dockerized      # [VERIFY] LB nodeType name on target edition
+    displayName: Load Balancer
+    count: 1
+    fixedCloudlets: 1
+    cloudlets: 8
+
+  - nodeGroup: cp
+    displayName: RustFS
+    image: ${globals.RUSTFS_IMAGE}            # rustfs/rustfs:<pinned tag> (vers.yaml)
+    count: ${settings.nodeCount}              # 1 for single; >=4 for cluster
+    cloudlets: 16
+    cmd: ${globals.DATA_DIR}                  # RustFS takes data path as arg (verified docker run)
+    volumes:
+      - ${globals.DATA_DIR}                   # persistent Local Filesystem volume (FR-4.1)
+    env:
+      # Forced non-default credentials (FR-4.2/FR-7.1). Default rustfsadmin MUST NOT reach prod.
+      RUSTFS_ACCESS_KEY: ${globals.RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${globals.RUSTFS_SECRET_KEY}
+      RUSTFS_ADDRESS: ":${globals.S3_PORT}"
+      RUSTFS_CONSOLE_ADDRESS: ":${globals.CONSOLE_PORT}"
+      # Console NOT publicly exposed by default (FR-7.3) — reachable only via internal net.
+      RUSTFS_CONSOLE_ENABLE: "false"
+      # NOTE: RUSTFS_SERVER_DOMAINS intentionally UNSET — setting it breaks the RustFS
+      # console (rustfs#887) and we use path-style only (FR-3.8). Presigned/SigV4 host
+      # correctness relies on the LB preserving Host (see nginx/s3-proxy.conf.tpl, M2).
+      # [VERIFY] confirm RustFS validates SigV4 against the incoming Host with domains unset.
+
+onInstall:
+  - setupRustFS
+  - if ('${settings.attachPublicIp}' == 'true'):
+      - attachPublicIp
+  - configureLB
+
+actions:
+  setupRustFS:
+    # Data dir must be writable by RustFS non-root user UID 10001 (verified docs).
+    - cmd[cp]: |-
+        mkdir -p ${globals.DATA_DIR}
+        chown -R 10001:10001 ${globals.DATA_DIR}
+      user: root
+
+  attachPublicIp:
+    # Attach a dedicated public IP to the LB so a custom-domain cert can be bound
+    # in Phase 2 (addons/bind-ssl.jps). PRD FR-3.4.
+    - api: environment.binder.AttachExtIp
+      nodeGroup: bl
+    # [VERIFY] exact API method/params for IPv4 attach on target edition.
+
+  configureLB:
+    # SigV4-safe reverse-proxy contract. Full template lands in M2
+    # (nginx/s3-proxy.conf.tpl) — fetched via baseUrl and written to conf.d.
+    - cmd[bl]: |-
+        curl -fsSL '${baseUrl}/nginx/s3-proxy.conf.tpl?_r=${fn.random}' \
+          | sed "s|__CP_HOST__|${nodes.cp.address}|g; s|__S3_PORT__|${globals.S3_PORT}|g" \
+          > /etc/nginx/conf.d/s3-proxy.conf
+        nginx -t && jem service reload || nginx -s reload
+      user: root
+    # [VERIFY] LB conf.d path + reload command on target edition (research §LB, Medium conf).
+
+success:
+  text: text/success.md
+  email: text/success.md
