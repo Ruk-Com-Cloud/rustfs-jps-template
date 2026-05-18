@@ -1,6 +1,12 @@
 # Phase-2 SSL bind add-on (PRD FR-3.5). type:update — runs on an EXISTING env.
 # User clicks "Bind SSL / Issue Certificate" AFTER pointing DNS at the public IP.
 # Idempotent / re-runnable (DNS not ready yet, domain change, renewal) — FR-3.7.
+#
+# The official Let's Encrypt add-on does NOT write our HTTPS vhost (verified:
+# its ssl-manager.js delegates :443 to jem ssl / SLB BindSSL). So we pass our
+# own JS deployHook (scripts/deployHook.js) which the add-on runs post-issue
+# AND on every ~30-day auto-renewal — it writes the :443 server block that
+# includes the shared SigV4-safe contract (nginx/s3-proxy.inc).
 type: update
 id: rustfs-bind-ssl
 name: Bind SSL / Issue Certificate
@@ -28,8 +34,8 @@ buttons:
 
 actions:
   bindSsl:
-    # 1) Verify the domain resolves to this env's public IP before issuing a cert
-    #    (Let's Encrypt needs reachability first — research §R3). Safe to retry.
+    # 1) Verify the domain resolves to this env's public IP BEFORE issuing
+    #    (Let's Encrypt needs reachability first). Safe to retry.
     - cmd[bl]: |-
         RESOLVED=$(dig +short ${this.externalDomain} | tail -n1)
         MYIP=$(curl -fsSL -4 ifconfig.me || true)
@@ -38,30 +44,25 @@ actions:
       user: root
     - assert:
         - condition: "${response.responses.exitStatus} === 0"
-          message: "DNS for ${this.externalDomain} does not resolve to this environment's
-                    public IP yet. Create/verify the A record, wait for propagation,
-                    then click the button again."
+          message: "DNS for ${this.externalDomain} does not resolve to this
+                    environment's public IP yet. Create/verify the A record,
+                    wait for propagation, then click the button again."
 
-    # 2) Issue + bind the cert via the official Let's Encrypt add-on, bound to the
-    #    LB node group (it CANNOT bind a custom Docker node — research-verified).
+    # 2) Issue + bind the cert via the official Let's Encrypt add-on, bound to
+    #    the NGINX LB node group. email is taken automatically from the
+    #    platform user (${user.email}) — NOT a settings field. customDomains +
+    #    our JS deployHook (verified contract: jelastic-jps/lets-encrypt
+    #    ssl-manager.js; pattern mirrors jelastic-jps/minio).
     - install:
         jps: https://raw.githubusercontent.com/jelastic-jps/lets-encrypt/master/manifest.jps?_r=${fn.random}
         nodeGroup: bl
         settings:
           customDomains: ${this.externalDomain}
-      # [VERIFY] LE add-on settings/hook params on target edition (research: High-conf
-      # the add-on binds LB node TYPES; confirm exact field names).
-
-    # 3) Flip the public endpoint to https on the customer domain so presigned URLs
-    #    / SigV4 Host validate against the real public name (FR-3.5/FR-4.4).
-    - setGlobals:
-        PROTOCOL: https
-        PUBLIC_DOMAIN: ${this.externalDomain}
-    - cmd[bl]: |-
-        sed -i "s|listen 80;|listen 80;\n    # https handled by LE add-on server block|" \
-          /etc/nginx/conf.d/s3-proxy.conf || true
-        nginx -t && jem service reload || nginx -s reload
-      user: root
-    # [VERIFY] interaction between LE add-on's generated 443 server{} and our
-    # conf.d/s3-proxy.conf — ensure the SigV4-safe directives also apply on 443
-    # (may require templating the TLS server block ourselves; validate on real env).
+          deployHook: ${baseUrl}/scripts/deployHook.js?_r=${fn.random}
+          deployHookType: js
+          undeployHook: ${baseUrl}/scripts/deployHook.js?_r=${fn.random}
+          undeployHookType: js
+    # The add-on's auto-renew cron re-fires deployHook (~30-day, idempotent),
+    # so the :443 vhost + SigV4-safe directives persist across renewals.
+    # [VERIFY-LIVE] confirm the add-on issues the cert and our deployHook
+    # writes/reloads the :443 vhost on the target edition.

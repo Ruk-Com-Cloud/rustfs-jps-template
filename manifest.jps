@@ -4,14 +4,13 @@
 # SeaweedFS is a SEPARATE sibling repo sharing this pattern.
 #
 # Spec: _bmad-output/planning-artifacts/prds/prd-rustfs-jps-template-2026-05-19/prd.md
-# Research (verified facts): _bmad-output/planning-artifacts/research/
-#   technical-jelastic-jps-rustfs-s3-version-management-research-2026-05-19.md
+# Research: _bmad-output/planning-artifacts/research/technical-jelastic-jps-...md
 #
-# [VERIFY] = must be validated on a real Jelastic/Virtuozzo env before release
-# (research §Implementation: dev = Import>JPS + in-editor validation; no offline validator).
+# Field names grounded in canonical docs.cloudscripting.com + real
+# jelastic-jps manifests (minio, backup-addon, rio, gitlab, wordpress-cluster)
+# + rustfs/rustfs@main. [VERIFY-LIVE] = only confirmable by a real install.
 # =====================================================================
 type: install
-version: '1.7'                 # [VERIFY] platform/CS spec version on target edition
 id: rustfs-s3
 name: RustFS S3 Object Storage
 displayName: RustFS S3 Object Storage (Beta)
@@ -21,34 +20,36 @@ description:
     single-node by default, with built-in HTTPS/domain mapping and a safe
     version-management workflow. BETA engine — opt-in.
   short: S3-compatible object storage (RustFS, beta)
-logo: images/rustfs-logo.png      # [TODO] add asset before listing (FR-9.1)
+logo: images/rustfs-logo.png
 categories:
   - apps/file-manager
-homepage: https://github.com/Ruk-Com-Cloud/rustfs-jps-template   # [TODO] set real repo URL
+homepage: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
 
-# baseUrl pins all relative scripts/configs to a release tag (research: jelastic-jps
-# convention). main = dev; releases override this to the vX.Y.Z tag.
+# baseUrl pins relative scripts/configs. main = dev; releases override to vX.Y.Z.
 baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
 
-# Single source of version truth — provides globals.rustfs_image_repo /
+# Single source of version truth → globals.rustfs_image_repo /
 # rustfs_default_tag / rustfs_allowlist (PRD FR-1.5 / FR-5.1).
 mixins:
   - configs/vers.yaml
 
-# Secrets generated at runtime, never stored in repo/manifest (PRD FR-7.1/FR-7.5).
+# Secrets generated at runtime, never stored in repo/manifest (FR-7.1/FR-7.5).
 globals:
   RUSTFS_ACCESS_KEY: ${fn.password(20)}
   RUSTFS_SECRET_KEY: ${fn.password(40)}
   S3_PORT: 9000
   CONSOLE_PORT: 9001
   DATA_DIR: /data
-  # RUSTFS_IMAGE / PROTOCOL / PUBLIC_IP_REQUESTED are set by onBeforeInit.
+  # JS deployHook the Let's Encrypt add-on runs post-issue (writes our :443
+  # vhost — see scripts/deployHook.js / addons/bind-ssl.jps).
+  DEPLOY_HOOK_JS: ${baseUrl}/scripts/deployHook.js
+  # RUSTFS_IMAGE is set by onBeforeInit from vers.yaml globals.
 
 onBeforeInit: scripts/beforeInit.js?_r=${fn.random}
 
 # ---------------------------------------------------------------------
-# Install wizard (PRD F2/F3). Conditional show/hide is finalized at
-# onBeforeInit on the target platform — [VERIFY] dynamic field API.
+# Install wizard. showIf is declared on the CONTROLLING field, keyed by its
+# value -> array of dependent fields (verified: jelastic-jps/backup-addon).
 # ---------------------------------------------------------------------
 settings:
   fields:
@@ -60,16 +61,17 @@ settings:
         cluster: Cluster / distributed (EXPERIMENTAL — RustFS beta)
       default: single
       required: true
-    - name: nodeCount
-      type: list
-      caption: Cluster size (cluster only)
-      values:
-        4: 4 nodes
-        8: 8 nodes
-        16: 16 nodes
-      default: 4
       showIf:
-        topology: [ cluster ]
+        cluster:
+          - name: nodeCount
+            type: list
+            caption: Cluster size
+            values:
+              4: 4 nodes
+              8: 8 nodes
+              16: 16 nodes
+            default: 4
+            required: true
     - name: attachPublicIp
       type: list
       caption: Public IP
@@ -78,22 +80,23 @@ settings:
         'false': 'No public IP (use Shared LB / env domain)'
       default: 'true'
       required: true
-    - name: externalDomain
-      type: string
-      caption: Your S3 domain (e.g. s3.example.com)
-      vtype: domain
-      required: false
       showIf:
-        attachPublicIp: [ 'true' ]
+        'true':
+          - name: externalDomain
+            type: string
+            caption: Your S3 domain (e.g. s3.example.com)
+            vtype: domain
+            required: false
 
 # ---------------------------------------------------------------------
-# Topology — explicit LB node (bl) is MANDATORY: Let's Encrypt cannot bind
-# a custom Docker node, so the LB owns TLS + the SigV4-safe proxy contract
-# (PRD FR-3.2 / research ADR-2).
+# Explicit NGINX LB node (bl) is MANDATORY: the Let's Encrypt add-on cannot
+# bind a custom Docker node and delegates :443 to jem ssl/SLB, so the LB owns
+# TLS + the SigV4-safe proxy contract (PRD FR-3.2 / research ADR-2).
+# nodeType 'nginx-dockerized' verified as the standalone NGINX balancer.
 # ---------------------------------------------------------------------
 nodes:
   - nodeGroup: bl
-    nodeType: nginx-dockerized      # [VERIFY] LB nodeType name on target edition
+    nodeType: nginx-dockerized
     displayName: Load Balancer
     count: 1
     fixedCloudlets: 1
@@ -101,56 +104,88 @@ nodes:
 
   - nodeGroup: cp
     displayName: RustFS
-    image: ${globals.RUSTFS_IMAGE}            # rustfs/rustfs:<pinned tag> (vers.yaml)
-    count: ${settings.nodeCount}              # 1 for single; >=4 for cluster
+    image: ${globals.RUSTFS_IMAGE}            # rustfs/rustfs:<pinned tag>
+    count: ${settings.nodeCount:1}            # 1 for single; >=4 for cluster
     cloudlets: 16
-    cmd: ${globals.DATA_DIR}                  # RustFS takes data path as arg (verified docker run)
     volumes:
-      - ${globals.DATA_DIR}                   # persistent Local Filesystem volume (FR-4.1)
+      - ${globals.DATA_DIR}                   # persistent Local Filesystem volume
+      - /backups                              # pre-upgrade snapshots (survive redeploy)
     env:
-      # Forced non-default credentials (FR-4.2/FR-7.1). Default rustfsadmin MUST NOT reach prod.
+      # Forced non-default credentials (FR-4.2/FR-7.1). Image default
+      # rustfsadmin/rustfsadmin MUST NOT reach prod.
       RUSTFS_ACCESS_KEY: ${globals.RUSTFS_ACCESS_KEY}
       RUSTFS_SECRET_KEY: ${globals.RUSTFS_SECRET_KEY}
       RUSTFS_ADDRESS: ":${globals.S3_PORT}"
       RUSTFS_CONSOLE_ADDRESS: ":${globals.CONSOLE_PORT}"
-      # Console NOT publicly exposed by default (FR-7.3) — reachable only via internal net.
-      RUSTFS_CONSOLE_ENABLE: "false"
-      # NOTE: RUSTFS_SERVER_DOMAINS intentionally UNSET — setting it breaks the RustFS
-      # console (rustfs#887) and we use path-style only (FR-3.8). Presigned/SigV4 host
-      # correctness relies on the LB preserving Host (see nginx/s3-proxy.conf.tpl, M2).
-      # [VERIFY] confirm RustFS validates SigV4 against the incoming Host with domains unset.
+      RUSTFS_CONSOLE_ENABLE: "false"          # console not public by default (FR-7.3)
+      RUSTFS_REGION: "us-east-1"             # stable SigV4 region reporting
+      # Single-node data path. Cluster overrides via buildCluster
+      # (RUSTFS_VOLUMES = identical http host/disk list on every node).
+      RUSTFS_VOLUMES: ${globals.DATA_DIR}
+      # RUSTFS_SERVER_DOMAINS intentionally UNSET — only needed for
+      # virtual-hosted-style; we use path-style. Verified: RustFS validates
+      # SigV4 against the incoming Host, so path-style + LB Host-preserve is
+      # correct without it (setting it can break the console, rustfs#887).
 
 onInstall:
   - setupRustFS
+  - if ('${settings.topology}' == 'cluster'):
+      - buildCluster
   - if ('${settings.attachPublicIp}' == 'true'):
       - attachPublicIp
   - configureLB
 
 actions:
   setupRustFS:
-    # Data dir must be writable by RustFS non-root user UID 10001 (verified docs).
+    # RustFS runs non-root UID/GID 10001 (verified Dockerfile) — data dir
+    # must be owned by 10001:10001.
     - cmd[cp]: |-
-        mkdir -p ${globals.DATA_DIR}
-        chown -R 10001:10001 ${globals.DATA_DIR}
+        mkdir -p ${globals.DATA_DIR} /backups
+        chown -R 10001:10001 ${globals.DATA_DIR} /backups
       user: root
+
+  buildCluster:
+    # EXPERIMENTAL (PRD D3 risk acceptance). RustFS distributed needs the
+    # IDENTICAL RUSTFS_VOLUMES on every node = http://<addr>:9000/data list
+    # (verified: rustfs .docker/compose/docker-compose.cluster.yaml).
+    # [VERIFY-LIVE] node address resolution + erasure-set formation;
+    # RustFS distributed is beta-unstable (rustfs#2248).
+    - script: |
+        var info = jelastic.env.control.GetEnvInfo('${env.name}', session);
+        var vols = [];
+        for (var i = 0; i < info.nodes.length; i++)
+          if (info.nodes[i].nodeGroup === 'cp')
+            vols.push('http://' + info.nodes[i].address + ':${globals.S3_PORT}${globals.DATA_DIR}');
+        return { result: 0, volumes: vols.join(' ') };
+    - setGlobals:
+        CLUSTER_VOLUMES: ${response.volumes}
+    - cmd[cp]: |-
+        echo "RUSTFS_VOLUMES='${globals.CLUSTER_VOLUMES}'" >> /etc/environment
+      user: root
+    - api: environment.control.RestartContainersByGroup
+      nodeGroup: cp
 
   attachPublicIp:
-    # Attach a dedicated public IP to the LB so a custom-domain cert can be bound
-    # in Phase 2 (addons/bind-ssl.jps). PRD FR-3.4.
+    # AttachExtIp is PER-NODE (verified: jelastic-jps/rio, docker addons).
+    # bl is count:1 so attach to its single node id.
     - api: environment.binder.AttachExtIp
-      nodeGroup: bl
-    # [VERIFY] exact API method/params for IPv4 attach on target edition.
+      nodeId: ${nodes.bl.id}
+    # [VERIFY-LIVE] IPv4 vs IPv6 selection depends on env/quota
+    # (environment.externalip.*) — confirm on the target installation.
 
   configureLB:
-    # SigV4-safe reverse-proxy contract. Full template lands in M2
-    # (nginx/s3-proxy.conf.tpl) — fetched via baseUrl and written to conf.d.
+    # Shared SigV4-safe include + :80 vhost. Reload via /etc/init.d/nginx
+    # (verified: jelastic-jps/wordpress-cluster — NOT systemctl/`nginx -s`).
     - cmd[bl]: |-
-        curl -fsSL '${baseUrl}/nginx/s3-proxy.conf.tpl?_r=${fn.random}' \
+        curl -fsSL '${baseUrl}/nginx/s3-proxy.inc?_r=${fn.random}' \
           | sed "s|__CP_HOST__|${nodes.cp.address}|g; s|__S3_PORT__|${globals.S3_PORT}|g" \
+          > /etc/nginx/conf.d/s3-proxy.inc
+        curl -fsSL '${baseUrl}/nginx/s3-proxy.conf.tpl?_r=${fn.random}' \
           > /etc/nginx/conf.d/s3-proxy.conf
-        nginx -t && jem service reload || nginx -s reload
+        nginx -t && sudo /etc/init.d/nginx reload
       user: root
-    # [VERIFY] LB conf.d path + reload command on target edition (research §LB, Medium conf).
+    # [VERIFY-LIVE] confirm conf.d path + that the LE add-on's later
+    # BindSSL/jem-ssl path coexists with our deployHook-written :443 vhost.
 
 success:
   text: text/success.md
