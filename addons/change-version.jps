@@ -2,11 +2,14 @@
 # Backup-before-upgrade -> redeploy to a TESTED tag keeping volume data -> verify.
 # Rollback = run again selecting the previous tag (FR-5.5).
 #
-# WARNING: the version-picker button is SYNTHESIZED from individually verified
-# official parts (buttons schema + environment.control.RedeployContainers +
-# onBefore/AfterRedeployContainer) — no jelastic-jps repo ships it verbatim.
-# MUST be validated against a throwaway env before marketplace listing
-# (research §Risk; PRD risk table).
+# WARNING: synthesized from individually verified official parts
+# (buttons + environment.control.RedeployContainersByGroup +
+#  onBefore/AfterRedeployContainer). No jelastic-jps repo ships a version
+# picker verbatim — [VERIFY-LIVE] against a throwaway env before listing.
+#
+# Backup note: there is NO public API to trigger jelastic-jps/backup-addon
+# on-demand from another JPS (verified). We take our own snapshot into the
+# persistent /backups volume (survives redeploy via useExistingVolumes).
 type: update
 id: rustfs-change-version
 name: Change Version
@@ -16,7 +19,7 @@ settings:
   main:
     fields:
       # Tag list MUST stay in sync with configs/vers.yaml `rustfs_allowlist`
-      # (tested tags only — FR-5.1; NEVER `latest` on the prod path). The release
+      # (tested tags only — FR-5.1; NEVER `latest` on the prod path). Release
       # process (FR-9.2) updates both together when bumping vers.yaml.
       - name: targetTag
         type: list
@@ -42,42 +45,47 @@ actions:
   changeVersion:
     # 1) Mandatory backup BEFORE any change (FR-5.2 / NFR-1 hard gate).
     - backupCp
-
     # 2) In-place redeploy to the chosen tested tag, PRESERVING volume data.
-    - api: environment.control.RedeployContainers
+    #    Verified method: environment.control.RedeployContainersByGroup
+    #    (params: nodeGroup, tag, useExistingVolumes:boolean).
+    - api: environment.control.RedeployContainersByGroup
       nodeGroup: cp
       tag: ${globals.rustfs_image_repo}:${this.targetTag}
       useExistingVolumes: true
-      # [VERIFY] exact RedeployContainers param names (tag/useExistingVolumes)
-      # on target edition — research High-conf from cloudscripting docs.
 
-  # 3) Post-redeploy health + S3 smoke; surface result (FR-5.4).
-  onAfterRedeployContainer[cp]:
+  backupCp:
+    # Snapshot /data into the persistent /backups volume (survives redeploy).
+    # Keep last 5.
     - cmd[cp]: |-
-        for i in $(seq 1 30); do
-          curl -fsS "http://127.0.0.1:${globals.S3_PORT}/health" && exit 0
-          sleep 2
-        done
-        echo "RustFS health check failed after upgrade"; exit 1
+        TS=$(date +%Y%m%d-%H%M%S)
+        mkdir -p /backups
+        tar czf /backups/rustfs-pre-upgrade-$TS.tgz -C ${globals.DATA_DIR} . \
+          && echo "snapshot: /backups/rustfs-pre-upgrade-$TS.tgz"
+        ls -1t /backups/rustfs-pre-upgrade-*.tgz 2>/dev/null | tail -n +6 | xargs -r rm -f
       user: root
     - assert:
         - condition: "${response.responses.exitStatus} === 0"
-          message: "Upgrade health check FAILED. Data was backed up and volumes
-                    preserved — roll back by running 'Change Version' again and
-                    selecting the previous version, then restore the backup if needed."
+          message: "Pre-upgrade backup FAILED — aborting before redeploy.
+                    Free disk space or check the /backups volume, then retry."
 
-  # Pre-redeploy quiesce hook (best-effort flush; FR-5.6).
-  onBeforeRedeployContainer[cp, useExistingVolumes:true]:
+  # Pre-redeploy quiesce (best-effort flush; FR-5.6).
+  onBeforeRedeployContainer [cp, useExistingVolumes:true]:
     - cmd[cp]: sync
       user: root
 
-  backupCp:
-    # On-demand snapshot via the platform Backup add-on (FR-6.2). Falls back to a
-    # tarball on the node if the add-on is not installed.
-    # [VERIFY] preferred = trigger jelastic-jps/backup-addon on-demand backup API;
-    # confirm method name on target edition (research §Backup, High-conf add-on exists).
+  # Post-redeploy strict readiness gate (/health/ready returns 503 until
+  # storage+IAM ready, 200 when ready — verified rustfs handlers/health.rs).
+  onAfterRedeployContainer [cp]:
     - cmd[cp]: |-
-        TS=$(date +%Y%m%d-%H%M%S)
-        tar czf /tmp/rustfs-pre-upgrade-$TS.tgz -C ${globals.DATA_DIR} . \
-          && echo "fallback snapshot: /tmp/rustfs-pre-upgrade-$TS.tgz"
+        for i in $(seq 1 30); do
+          curl -fsS "http://127.0.0.1:${globals.S3_PORT}/health/ready" >/dev/null 2>&1 && exit 0
+          sleep 2
+        done
+        echo "RustFS readiness check failed after upgrade"; exit 1
       user: root
+    - assert:
+        - condition: "${response.responses.exitStatus} === 0"
+          message: "Upgrade readiness check FAILED. Data was backed up
+                    (/backups) and volumes preserved — roll back by running
+                    'Change Version' again selecting the previous version,
+                    then restore the snapshot if needed."

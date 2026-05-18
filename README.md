@@ -85,9 +85,25 @@ Forced generated credentials (no default `rustfsadmin` reaching prod), console n
 
 `main` = dev. To ship a new RustFS version: run CI against the candidate tag → on pass, add the tag to `configs/vers.yaml` allowlist + the `change-version.jps` picker → cut Git tag `vX.Y.Z` → point the marketplace/deploy link at that tag. Existing environments do **not** auto-upgrade.
 
-### Known `[VERIFY]` items before release
+### Verification status
 
-LB nodeType name & conf.d/reload path · `AttachExtIp` / `RedeployContainers` / backup-addon API param names · Let's Encrypt add-on TLS server block vs SigV4-safe directives on :443 · RustFS SigV4 Host validation with `RUSTFS_SERVER_DOMAINS` unset · RustFS health GET-only quirk · s3-tests acceptance baseline.
+**Resolved against authoritative docs/source** (docs.cloudscripting.com, real
+jelastic-jps manifests, rustfs/rustfs@main): LB `nodeType: nginx-dockerized`;
+conf.d path + `sudo /etc/init.d/nginx reload`; `showIf` nesting on the
+controlling field; per-node `environment.binder.AttachExtIp`;
+`environment.control.RedeployContainersByGroup` (`tag` + `useExistingVolumes`);
+RustFS validates SigV4 against the incoming Host (path-style + Host-preserve →
+correct, `RUSTFS_SERVER_DOMAINS` unset); health `/health` (200) & strict
+`/health/ready` (503→200); non-root UID 10001; LE add-on `deployHook` contract
+(it does **not** write our :443 vhost — we own it via `scripts/deployHook.js`);
+no public API to trigger backup-addon externally → own `/backups` snapshot.
+
+**Remaining `[VERIFY-LIVE]`** (only confirmable by a real install): public-IP
+attach IPv4/quota behavior on the target edition · RustFS distributed/cluster
+erasure-set formation & stability (beta) · LE cert issuance + our deployHook
+firing/reload end-to-end on :443 · conf.d coexistence with the platform
+SLB/jem-ssl path · S3 E2E (SigV4/multipart/presigned) green through the LB ·
+s3-tests acceptance baseline (OQ-6).
 
 ### License
 
@@ -162,9 +178,11 @@ S3 ใช้ **path-style เท่านั้น** — ตั้ง client เ
 
 `main` = dev ออกเวอร์ชันใหม่: รัน CI กับ tag candidate → ผ่านแล้วเพิ่ม tag เข้า allowlist `configs/vers.yaml` + picker ใน `change-version.jps` → cut Git tag `vX.Y.Z` → ชี้ลิงก์ deploy/marketplace ไป tag นั้น — environment เดิมจะไม่อัปเกรดอัตโนมัติ
 
-### รายการ `[VERIFY]` ที่ต้องเช็คก่อนปล่อยจริง
+### สถานะการ verify
 
-ชื่อ LB nodeType + path conf.d/คำสั่ง reload · param ของ API `AttachExtIp` / `RedeployContainers` / backup-addon · TLS server block ของ Let's Encrypt add-on vs directive SigV4-safe บน :443 · RustFS validate SigV4 ด้วย Host ตอนไม่ตั้ง `RUSTFS_SERVER_DOMAINS` · RustFS health เป็น GET-only · baseline s3-tests
+**ยืนยันแล้วจากเอกสาร/ซอร์สทางการ** (docs.cloudscripting.com, manifest jelastic-jps จริง, rustfs/rustfs@main): LB `nodeType: nginx-dockerized` · path conf.d + `sudo /etc/init.d/nginx reload` · โครงสร้าง `showIf` บน field ที่คุม · `environment.binder.AttachExtIp` ราย node · `environment.control.RedeployContainersByGroup` (`tag` + `useExistingVolumes`) · RustFS validate SigV4 ด้วย Host ที่เข้ามา (path-style + preserve Host = ถูกต้อง ไม่ต้องตั้ง `RUSTFS_SERVER_DOMAINS`) · health `/health` (200) และ `/health/ready` (503→200) · non-root UID 10001 · contract `deployHook` ของ LE add-on (มันไม่เขียน :443 vhost ให้ — เราเขียนเองผ่าน `scripts/deployHook.js`) · ไม่มี API เรียก backup-addon ข้าม JPS → ใช้ snapshot `/backups` เอง
+
+**เหลือ `[VERIFY-LIVE]`** (ยืนยันได้เฉพาะตอน install จริง): พฤติกรรม attach public IPv4/quota บน edition เป้าหมาย · การฟอร์ม erasure-set ของ RustFS cluster (beta) · การออก cert ของ LE + deployHook ทำงาน/reload :443 ครบ flow · conf.d อยู่ร่วมกับ path SLB/jem-ssl ของแพลตฟอร์ม · E2E S3 (SigV4/multipart/presigned) ผ่าน LB เขียว · baseline s3-tests (OQ-6)
 
 ### License
 
