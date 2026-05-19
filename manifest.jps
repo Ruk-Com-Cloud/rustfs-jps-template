@@ -173,7 +173,7 @@ actions:
     # AttachExtIp is PER-NODE (verified: jelastic-jps/rio, docker addons).
     # bl is count:1 so attach to its single node id.
     - api: environment.binder.AttachExtIp
-      nodeId: ${nodes.bl.id}
+      nodeid: ${nodes.bl.id}
     # [VERIFY-LIVE] IPv4 vs IPv6 selection depends on env/quota
     # (environment.externalip.*) — confirm on the target installation.
 
