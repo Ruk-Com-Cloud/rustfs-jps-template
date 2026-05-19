@@ -1,28 +1,22 @@
-# RustFS version pins + tested-tag allowlist (single source of version truth)
-# Bump here only. master = dev; releases are Git tags vX.Y.Z; marketplace points at a tag.
-# A tag enters `allowlist` ONLY after CI (s3-tests + E2E SigV4/multipart/presigned via LB)
-# passes against it (PRD FR-5.1 / FR-9.3 / OQ-6). NEVER use `latest` on the production path.
+# RustFS version pins (single source of version truth).
+# Bump here only. main = dev; releases are Git tags vX.Y.Z; marketplace points
+# at a tag. A tag may be used ONLY after CI (s3-tests + E2E SigV4/multipart/
+# presigned via LB) passes (PRD FR-5.1 / FR-9.3 / OQ-6). NEVER `latest` in prod.
 #
-# Source: research doc §Technology Stack / §Implementation — RustFS is pre-1.0 BETA,
-# no on-disk-format-stability/LTS policy. Treat every bump as breaking until proven.
+# RustFS is pre-1.0 BETA, no on-disk-format/LTS policy — treat every bump as
+# breaking until proven.
+#
+# IMPORTANT: this file is loaded via `mixins:` and its `globals:` are merged
+# into the manifest globals. JPS globals MUST be SCALARS only — a nested
+# list/object here (e.g. an allowlist array) breaks manifest processing and
+# leaks into settings. So the tested-tag allowlist is kept as DOCUMENTATION
+# (comments) here; the user-facing picker lives in addons/change-version.jps.
+#
+# Tested-tag allowlist (process doc — keep in sync with change-version.jps):
+#   - 1.0.0-beta.3  released 2026-05-14  status: tested
+#       Initial baseline. Beta — see research §RustFS caveats.
+#   - 1.0.0         (add on GA ~Jul 2026, AFTER CI passes; revisit LTS policy)
 
 globals:
-  # Default tag offered for NEW installs (must be a member of `allowlist`).
   rustfs_default_tag: "1.0.0-beta.3"
-
-  # Image repo (Docker Hub official). Pin by tag here; consider digest pinning for prod
-  # per org guardrails once a tag is validated.
   rustfs_image_repo: "rustfs/rustfs"
-
-  # Tested-tag allowlist surfaced in the "Change Version" picker (addons/change-version.jps).
-  # Order = newest first. Each entry MUST have passed CI before being added.
-  # [VERIFY] pass-rate baseline / acceptance criteria per OQ-6 before first real release.
-  rustfs_allowlist:
-    - tag: "1.0.0-beta.3"
-      released: "2026-05-14"
-      status: "tested"          # tested | candidate | blocked
-      notes: "Initial baseline. Beta — see research §RustFS caveats."
-    # - tag: "1.0.0"            # add on GA (~Jul 2026 target) AFTER CI passes; re-evaluate
-    #   released: ""
-    #   status: "candidate"
-    #   notes: "RustFS 1.0 GA — revisit format-stability/LTS policy (PRD NFR-5)."
