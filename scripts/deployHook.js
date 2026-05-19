@@ -29,7 +29,7 @@ var PRIVKEY   = '/var/lib/jelastic/keys/privkey.pem';
 
 var cmd;
 if (action === 'uninstall') {
-	cmd = "rm -f " + SSL_CONF + " && sudo /etc/init.d/nginx reload || true";
+	cmd = "rm -f " + SSL_CONF + " && nginx -s reload || true";
 } else {
 	// Heredoc-write the :443 vhost; reuse the shared SigV4-safe include.
 	cmd =
@@ -42,7 +42,7 @@ if (action === 'uninstall') {
 		"    include /etc/nginx/conf.d/s3-proxy.inc;\n" +
 		"}\n" +
 		"EOF\n" +
-		"nginx -t && sudo /etc/init.d/nginx reload";
+		"nginx -t && nginx -s reload";
 }
 
 // Run on the bl (NGINX LB) node group — the LE-bound layer.
