@@ -178,15 +178,24 @@ actions:
     # (environment.externalip.*) — confirm on the target installation.
 
   configureLB:
-    # Shared SigV4-safe include + :80 vhost. Reload via /etc/init.d/nginx
-    # (verified: jelastic-jps/wordpress-cluster — NOT systemctl/`nginx -s`).
+    # Shared SigV4-safe include + :80 vhost. The :80 server is written inline
+    # so server_name can bind the env + custom domain (NOT `_`/default_server
+    # — the Jelastic nginx LB already owns the `_` default; duplicating it
+    # makes nginx IGNORE our server -> S3 never reaches RustFS).
+    # Reload: `nginx -s reload` (this edition's nginx node has NO
+    # /etc/init.d/nginx; the binary is in PATH — `nginx -t` runs there).
     - cmd[bl]: |-
         curl -fsSL '${baseUrl}/nginx/s3-proxy.inc?_r=${fn.random}' \
           | sed "s|__CP_HOST__|${nodes.cp.address}|g; s|__S3_PORT__|${globals.S3_PORT}|g" \
           > /etc/nginx/conf.d/s3-proxy.inc
-        curl -fsSL '${baseUrl}/nginx/s3-proxy.conf.tpl?_r=${fn.random}' \
-          > /etc/nginx/conf.d/s3-proxy.conf
-        nginx -t && sudo /etc/init.d/nginx reload
+        cat > /etc/nginx/conf.d/s3-proxy.conf <<'EOF'
+        server {
+            listen 80;
+            server_name ${env.domain} ${settings.externalDomain};
+            include /etc/nginx/conf.d/s3-proxy.inc;
+        }
+        EOF
+        nginx -t && nginx -s reload
       user: root
     # [VERIFY-LIVE] confirm conf.d path + that the LE add-on's later
     # BindSSL/jem-ssl path coexists with our deployHook-written :443 vhost.
