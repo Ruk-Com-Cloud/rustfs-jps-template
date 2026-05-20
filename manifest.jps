@@ -135,6 +135,7 @@ onInstall:
   - if ('${settings.attachPublicIp}' == 'true'):
       - attachPublicIp
   - configureLB
+  - addConsoleEndpoint
 
 actions:
   setupRustFS:
@@ -191,29 +192,26 @@ actions:
             server_name ${env.domain} ${settings.externalDomain};
             include /etc/nginx/conf.d/s3-proxy.inc;
         }
-        # Admin dashboard (RustFS console) on :9001 -> cp:9001. Separate port
-        # avoids path-style S3 bucket-name collisions on :80. Reachable when a
-        # public IP is attached to the LB.
-        server {
-            listen 9001;
-            server_name ${env.domain} ${settings.externalDomain};
-            client_max_body_size 0;
-            location / {
-                proxy_pass http://${nodes.cp.address}:${globals.CONSOLE_PORT};
-                proxy_set_header Host $http_host;
-                proxy_set_header X-Forwarded-Proto $scheme;
-                proxy_http_version 1.1;
-                proxy_set_header Upgrade $http_upgrade;
-                proxy_set_header Connection "upgrade";
-                proxy_buffering off;
-            }
-        }
         EOF
         nginx -t && nginx -s reload
       user: root
-    # [VERIFY-LIVE] confirm conf.d path; LE :443 coexistence; and that the
-    # RustFS console at :9001 works behind the proxy (may need a console
-    # external-S3-URL setting on some builds).
+    # [VERIFY-LIVE] confirm conf.d path + LE :443 coexistence.
+
+  addConsoleEndpoint:
+    # Admin dashboard (RustFS console :9001) exposed via a Jelastic Endpoint
+    # (verified standard: jelastic-jps daas-addon/minecraft). The LB does NOT
+    # proxy it — a custom port on the LB is firewall-blocked. The endpoint maps
+    # cp:9001 -> an SLB public port (no public IP needed). Reachable at
+    # node<id>-<env.domain>:<publicPort>.
+    - api: env.control.AddEndpoint
+      nodeId: ${nodes.cp.master.id}
+      privatePort: ${globals.CONSOLE_PORT}
+      protocol: TCP
+      name: RustFS Console
+    - setGlobals:
+        CONSOLE_PUBLIC_PORT: ${response.object.publicPort}
+    # [VERIFY-LIVE] console UI loads on the endpoint URL and can reach the S3
+    # API (some builds need a console external-S3-URL setting).
 
 success:
   text: |
@@ -223,7 +221,7 @@ success:
     **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
     **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
 
-    **Admin dashboard:** http://${env.domain}:9001/ (login with the keys above; needs a public IP).
+    **Admin dashboard:** http://node${nodes.cp.master.id}-${env.domain}:${globals.CONSOLE_PUBLIC_PORT}/ (login with the keys above).
 
     **AWS CLI:**
     `aws configure set default.s3.addressing_style path`
