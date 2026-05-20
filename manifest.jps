@@ -15,11 +15,8 @@ id: rustfs-s3
 name: RustFS S3 Object Storage
 displayName: RustFS S3 Object Storage (Beta)
 description:
-  text: |
-    RustFS — S3-compatible object storage (Rust, Apache-2.0). One-click,
-    single-node by default, with built-in HTTPS/domain mapping and a safe
-    version-management workflow. BETA engine — opt-in.
-  short: S3-compatible object storage (RustFS, beta)
+  text: RustFS S3-compatible object storage (beta).
+  short: RustFS S3 object storage (beta)
 logo: images/rustfs-logo.png
 categories:
   - apps/file-manager
@@ -201,5 +198,9 @@ actions:
     # BindSSL/jem-ssl path coexists with our deployHook-written :443 vhost.
 
 success:
-  text: text/success.md
-  email: text/success.md
+  text: |
+    RustFS S3 is ready.
+    Endpoint (path-style): http://${env.domain}/
+    Access Key: ${globals.RUSTFS_ACCESS_KEY}
+    Secret Key: ${globals.RUSTFS_SECRET_KEY}
+    To enable HTTPS on your own domain, open Add-Ons and run "Bind SSL".
