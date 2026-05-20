@@ -118,7 +118,7 @@ nodes:
       RUSTFS_SECRET_KEY: ${globals.RUSTFS_SECRET_KEY}
       RUSTFS_ADDRESS: ":${globals.S3_PORT}"
       RUSTFS_CONSOLE_ADDRESS: ":${globals.CONSOLE_PORT}"
-      RUSTFS_CONSOLE_ENABLE: "false"          # console not public by default (FR-7.3)
+      RUSTFS_CONSOLE_ENABLE: "true"           # admin dashboard (proxied on LB :9001)
       RUSTFS_REGION: "us-east-1"             # stable SigV4 region reporting
       # Single-node data path. Cluster overrides via buildCluster
       # (RUSTFS_VOLUMES = identical http host/disk list on every node).
@@ -191,16 +191,43 @@ actions:
             server_name ${env.domain} ${settings.externalDomain};
             include /etc/nginx/conf.d/s3-proxy.inc;
         }
+        # Admin dashboard (RustFS console) on :9001 -> cp:9001. Separate port
+        # avoids path-style S3 bucket-name collisions on :80. Reachable when a
+        # public IP is attached to the LB.
+        server {
+            listen 9001;
+            server_name ${env.domain} ${settings.externalDomain};
+            client_max_body_size 0;
+            location / {
+                proxy_pass http://${nodes.cp.address}:${globals.CONSOLE_PORT};
+                proxy_set_header Host $http_host;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_buffering off;
+            }
+        }
         EOF
         nginx -t && nginx -s reload
       user: root
-    # [VERIFY-LIVE] confirm conf.d path + that the LE add-on's later
-    # BindSSL/jem-ssl path coexists with our deployHook-written :443 vhost.
+    # [VERIFY-LIVE] confirm conf.d path; LE :443 coexistence; and that the
+    # RustFS console at :9001 works behind the proxy (may need a console
+    # external-S3-URL setting on some builds).
 
 success:
   text: |
-    RustFS S3 is ready.
-    Endpoint (path-style): http://${env.domain}/
-    Access Key: ${globals.RUSTFS_ACCESS_KEY}
-    Secret Key: ${globals.RUSTFS_SECRET_KEY}
-    To enable HTTPS on your own domain, open Add-Ons and run "Bind SSL".
+    **RustFS S3 is ready.** Keep these credentials safe.
+
+    **S3 endpoint (path-style):** http://${env.domain}/
+    **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
+    **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
+
+    **Admin dashboard:** http://${env.domain}:9001/ (login with the keys above; needs a public IP).
+
+    **AWS CLI:**
+    `aws configure set default.s3.addressing_style path`
+    `aws --endpoint-url http://${env.domain} s3 mb s3://my-bucket`
+    `aws --endpoint-url http://${env.domain} s3 cp file s3://my-bucket/`
+
+    **HTTPS on your domain:** Add-Ons -> "Bind SSL". Full guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
