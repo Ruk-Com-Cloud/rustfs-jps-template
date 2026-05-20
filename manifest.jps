@@ -228,4 +228,4 @@ success:
     `aws --endpoint-url http://${env.domain} s3 mb s3://my-bucket`
     `aws --endpoint-url http://${env.domain} s3 cp file s3://my-bucket/`
 
-    **HTTPS on your domain:** Add-Ons -> "Bind SSL". Full guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
+    **HTTPS on your domain:** point your domain's DNS **A record** to the Load Balancer public IP **${nodes.bl.extIPs}**, wait for propagation, then open Add-Ons -> "Bind SSL". Full guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
