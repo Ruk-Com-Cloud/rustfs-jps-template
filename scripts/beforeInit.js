@@ -27,4 +27,17 @@ if (topology === 'cluster') {
 	}
 }
 
+// diskSize is a form list (20/50/100/200, default 50). The form constrains it,
+// but an API/CI install can pass an arbitrary value; reject anything below the
+// minimum so an invalid quota never reaches nodes.cp.diskLimit.
+var diskSize = parseInt('${settings.diskSize:50}', 10);
+if (isNaN(diskSize) || diskSize < 20) {
+	return {
+		result: 4002,
+		type: 'warning',
+		message: 'Disk size must be at least 20 GB. Pick a value from the list ' +
+		         '(20 / 50 / 100 / 200 GB).'
+	};
+}
+
 return { result: 0 };

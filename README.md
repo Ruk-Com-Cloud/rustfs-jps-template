@@ -41,9 +41,12 @@ This is the **RustFS** repo. **SeaweedFS** ships as a *separate sibling repo* sh
 
 | Option | Choices |
 |---|---|
+| **Disk size** | storage quota **per node**: 20 · 50 (default) · 100 · 200 GB |
 | **Topology** | `single` (default, production-safe) · `cluster` (EXPERIMENTAL — RustFS distributed is beta-unstable; ≥4 nodes; warning shown) |
 | **Public IP** | attach (default, recommended — required for custom-domain HTTPS) · none |
 | **Your S3 domain** | optional; drives the two-phase SSL flow |
+
+> **Disk sizing:** the quota is **per node** — a `cluster` of N nodes provisions N × the chosen size. Leave headroom beyond your live data: the "Change Version" upgrade snapshots `/data` into `/backups` on the **same** node quota (keeps 5 archives), so a near-full disk will refuse the pre-upgrade backup. Growing the quota later (node redeploy) is supported; shrinking below current usage is not.
 
 ### Two-phase domain + HTTPS
 
@@ -134,9 +137,12 @@ repo นี้คือเครื่องยนต์ **RustFS** ส่วน
 
 | ตัวเลือก | ค่าที่เลือกได้ |
 |---|---|
+| **Disk size** | quota ดิสก์ **ต่อ node**: 20 · 50 (ค่าเริ่มต้น) · 100 · 200 GB |
 | **Topology** | `single` (ค่าเริ่มต้น ปลอดภัยสำหรับ production) · `cluster` (ทดลอง — RustFS distributed ยัง beta ไม่เสถียร ต้อง ≥4 nodes มีคำเตือน) |
 | **Public IP** | แนบ (ค่าเริ่มต้น แนะนำ — จำเป็นสำหรับ HTTPS บนโดเมนตัวเอง) · ไม่แนบ |
 | **โดเมน S3 ของคุณ** | ไม่บังคับ; ใช้ขับ flow SSL สองเฟส |
+
+> **เรื่องขนาดดิสก์:** quota เป็น **ต่อ node** — `cluster` N nodes จะจอง N × ขนาดที่เลือก เผื่อพื้นที่ให้มากกว่าข้อมูลจริง เพราะปุ่ม "Change Version" จะ snapshot `/data` ไปไว้ `/backups` บน quota ของ node **เดียวกัน** (เก็บ 5 ไฟล์) ถ้าดิสก์เกือบเต็มจะ backup ก่อน upgrade ไม่ได้ · ขยาย quota ภายหลัง (redeploy node) ได้ แต่ลดต่ำกว่าที่ใช้อยู่ไม่ได้
 
 ### ผูกโดเมน + HTTPS สองเฟส
 
