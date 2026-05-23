@@ -54,6 +54,23 @@ onBeforeInit: scripts/beforeInit.js?_r=${fn.random}
 # ---------------------------------------------------------------------
 settings:
   fields:
+    # Storage disk quota per RustFS node. Bound to diskLimit on nodeGroup cp
+    # (verified docs.cloudscripting.com: per-node, default unit GB). For cluster
+    # the same quota applies to every node (diskLimit is per-node).
+    # MUST be declared FIRST: a visible field placed AFTER a showIf-bearing field
+    # does not render on the initial (unexpanded) import wizard — it only appeared
+    # after toggling topology. Plain visible fields precede showIf fields (matches
+    # jelastic-jps/kubernetes settings ordering).
+    - name: diskSize
+      type: list
+      caption: Disk size (storage quota per node)
+      values:
+        20: 20 GB
+        50: 50 GB (recommended)
+        100: 100 GB
+        200: 200 GB
+      default: 50
+      required: true
     - name: topology
       type: list
       caption: Topology
@@ -88,19 +105,6 @@ settings:
             caption: Your S3 domain (e.g. s3.example.com)
             vtype: domain
             required: false
-    # Storage disk quota per RustFS node. Bound to diskLimit on nodeGroup cp
-    # (verified docs.cloudscripting.com: per-node, default unit GB). For cluster
-    # the same quota applies to every node (diskLimit is per-node).
-    - name: diskSize
-      type: list
-      caption: Disk size (storage quota per node)
-      values:
-        20: 20 GB
-        50: 50 GB (recommended)
-        100: 100 GB
-        200: 200 GB
-      default: 50
-      required: true
 
 # ---------------------------------------------------------------------
 # Explicit NGINX LB node (bl) is MANDATORY: the Let's Encrypt add-on cannot
