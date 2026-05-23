@@ -88,6 +88,19 @@ settings:
             caption: Your S3 domain (e.g. s3.example.com)
             vtype: domain
             required: false
+    # Storage disk quota per RustFS node. Bound to diskLimit on nodeGroup cp
+    # (verified docs.cloudscripting.com: per-node, default unit GB). For cluster
+    # the same quota applies to every node (diskLimit is per-node).
+    - name: diskSize
+      type: list
+      caption: Disk size (storage quota per node)
+      values:
+        20: 20 GB
+        50: 50 GB (recommended)
+        100: 100 GB
+        200: 200 GB
+      default: 50
+      required: true
 
 # ---------------------------------------------------------------------
 # Explicit NGINX LB node (bl) is MANDATORY: the Let's Encrypt add-on cannot
@@ -108,6 +121,7 @@ nodes:
     image: ${globals.rustfs_image_repo}:${globals.rustfs_default_tag}   # from configs/vers.yaml mixin (resolved at parse time)
     count: ${settings.nodeCount:1}            # 1 for single; >=4 for cluster
     cloudlets: 16
+    diskLimit: ${settings.diskSize:50}        # GB; user-selected storage quota (settings.diskSize), per node
     volumes:
       - ${globals.DATA_DIR}                   # persistent Local Filesystem volume
       - /backups                              # pre-upgrade snapshots (survive redeploy)
@@ -220,6 +234,7 @@ success:
     **S3 endpoint (path-style):** http://${env.domain}/
     **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
     **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
+    **Disk quota:** ${settings.diskSize:50} GB per node
 
     **Admin dashboard:** http://node${nodes.cp.master.id}-${env.domain}:${globals.CONSOLE_PUBLIC_PORT}/ (login with the keys above).
 
