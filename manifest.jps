@@ -193,13 +193,24 @@ actions:
     # Set the SAME volume list as the real container env on every cp node.
     - env.control.AddContainerEnvVars[cp]:
         vars: {"RUSTFS_VOLUMES": "${response.volumes}"}
+    # Fresh-format the drives for distributed mode. The nodes first booted in
+    # single-node mode (RUSTFS_VOLUMES=/data) and wrote a single-node format to
+    # /data (.rustfs.sys/format.json + pool.bin). RustFS refuses to form an
+    # erasure set over a pre-existing single-node format — it FATALs with
+    # "inconsistent drive found" (verified live). Stop the single instance (the
+    # launcher does NOT respawn it) and wipe /data so the post-restart
+    # distributed boot initializes a clean erasure set. Safe: this runs only at
+    # install on a brand-new env, before any user data exists.
+    - cmd[cp]: |-
+        pkill -9 rustfs 2>/dev/null || true
+        find /data -mindepth 1 -delete 2>/dev/null || true
+        chown -R 10001:10001 /data
+      user: root
     # Restart the cp nodes so the launcher (-e /.jelenv) re-reads the env that
-    # AddContainerEnvVars just wrote and rustfs starts with the full peer list,
-    # forming the erasure set. Verified live: AddContainerEnvVars writes
-    # RUSTFS_VOLUMES into /.jelenv but does NOT restart the container, so the
-    # process keeps the old /data until a restart. RestartNodesByGroup (NOT
-    # Redeploy) — no image pull, no tag (opensearch-cluster uses this exact call
-    # to form its cluster). Data is preserved (restart, not recreate).
+    # AddContainerEnvVars wrote and rustfs boots distributed on the clean drives,
+    # forming the erasure set together. RestartNodesByGroup (NOT Redeploy) — no
+    # image pull, no tag (opensearch-cluster uses this exact call to form its
+    # cluster).
     - api: environment.control.RestartNodesByGroup
       nodeGroup: cp
 
