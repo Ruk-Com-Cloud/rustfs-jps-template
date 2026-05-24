@@ -193,10 +193,13 @@ actions:
     # Set the SAME volume list as the real container env on every cp node.
     - env.control.AddContainerEnvVars[cp]:
         vars: {"RUSTFS_VOLUMES": "${response.volumes}"}
-    # Redeploy (data preserved) so the entrypoint re-reads RUSTFS_VOLUMES and the
-    # nodes form the distributed erasure set together.
+    # Redeploy to the SAME tag (data preserved) to recreate the containers so the
+    # entrypoint re-reads the new RUSTFS_VOLUMES and the nodes form the erasure
+    # set together. RedeployContainersByGroup REQUIRES `tag` (it's the in-place
+    # redeploy method; same call change-version.jps uses for upgrades).
     - api: environment.control.RedeployContainersByGroup
       nodeGroup: cp
+      tag: ${globals.rustfs_image_repo}:${globals.rustfs_default_tag}
       useExistingVolumes: true
 
   attachPublicIp:
