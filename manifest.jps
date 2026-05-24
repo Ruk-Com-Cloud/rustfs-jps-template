@@ -177,15 +177,18 @@ actions:
     # process env and does NOT source /etc/environment. So we set it via
     # AddContainerEnvVars (writes the Docker env) then redeploy to apply.
     # [VERIFY-LIVE] erasure-set formation; RustFS distributed is beta (rustfs#2248).
+    # Build the peer list from the platform-resolved cp node IDs (reliable at
+    # onInstall) rather than a runtime GetEnvInfo call, which returned 0 cp nodes
+    # in testing. ${nodes.cp.join(id,)} -> "87815,87816,..." (jelastic-jps/wildfly
+    # precedent). Each id maps to the Jelastic-resolvable hostname node<id>.
     - script: |
-        var info = jelastic.env.control.GetEnvInfo('${env.envName}', session);
-        if (info.result != 0) return info;
-        var vols = [];
-        for (var i = 0; i < info.nodes.length; i++)
-          if (info.nodes[i].nodeGroup === 'cp')
-            vols.push('http://node' + info.nodes[i].id + ':${globals.S3_PORT}${globals.DATA_DIR}');
+        var raw = "${nodes.cp.join(id,)}";
+        var ids = raw.split(',').filter(function (x) { return x.length > 0; });
+        var vols = ids.map(function (id) {
+          return 'http://node' + id + ':${globals.S3_PORT}${globals.DATA_DIR}';
+        });
         if (vols.length < 2)
-          return { result: 1, error: 'buildCluster: expected >=2 cp nodes, found ' + vols.length };
+          return { result: 1, error: 'buildCluster: expected >=2 cp nodes, got [' + raw + ']' };
         return { result: 0, volumes: vols.join(' ') };
     # Set the SAME volume list as the real container env on every cp node.
     - env.control.AddContainerEnvVars[cp]:
