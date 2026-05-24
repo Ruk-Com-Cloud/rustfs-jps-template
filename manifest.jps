@@ -165,25 +165,36 @@ actions:
       user: root
 
   buildCluster:
-    # EXPERIMENTAL (PRD D3 risk acceptance). RustFS distributed needs the
-    # IDENTICAL RUSTFS_VOLUMES on every node = http://<addr>:9000/data list
-    # (verified: rustfs .docker/compose/docker-compose.cluster.yaml).
-    # [VERIFY-LIVE] node address resolution + erasure-set formation;
-    # RustFS distributed is beta-unstable (rustfs#2248).
+    # EXPERIMENTAL (PRD D3 risk acceptance). RustFS distributed = ONE erasure
+    # set built from an explicit, space-separated list of every cp node's
+    # endpoint. Verified against rustfs config_test.rs: N space-separated
+    # volumes -> 1 pool / 1 set / N drives (legacy layout) — NO ellipsis and NO
+    # sequential hostnames required. Jelastic intra-env DNS resolves node<id>,
+    # so we address peers by hostname (stable across IP changes).
+    #
+    # RUSTFS_VOLUMES must be (a) IDENTICAL on every node and (b) delivered as the
+    # CONTAINER env: rustfs entrypoint.sh reads ${RUSTFS_VOLUMES} from the
+    # process env and does NOT source /etc/environment. So we set it via
+    # AddContainerEnvVars (writes the Docker env) then redeploy to apply.
+    # [VERIFY-LIVE] erasure-set formation; RustFS distributed is beta (rustfs#2248).
     - script: |
-        var info = jelastic.env.control.GetEnvInfo('${env.name}', session);
+        var info = jelastic.env.control.GetEnvInfo('${env.envName}', session);
+        if (info.result != 0) return info;
         var vols = [];
         for (var i = 0; i < info.nodes.length; i++)
           if (info.nodes[i].nodeGroup === 'cp')
-            vols.push('http://' + info.nodes[i].address + ':${globals.S3_PORT}${globals.DATA_DIR}');
+            vols.push('http://node' + info.nodes[i].id + ':${globals.S3_PORT}${globals.DATA_DIR}');
+        if (vols.length < 2)
+          return { result: 1, error: 'buildCluster: expected >=2 cp nodes, found ' + vols.length };
         return { result: 0, volumes: vols.join(' ') };
-    - setGlobals:
-        CLUSTER_VOLUMES: ${response.volumes}
-    - cmd[cp]: |-
-        echo "RUSTFS_VOLUMES='${globals.CLUSTER_VOLUMES}'" >> /etc/environment
-      user: root
-    - api: environment.control.RestartContainersByGroup
+    # Set the SAME volume list as the real container env on every cp node.
+    - env.control.AddContainerEnvVars[cp]:
+        vars: {"RUSTFS_VOLUMES": "${response.volumes}"}
+    # Redeploy (data preserved) so the entrypoint re-reads RUSTFS_VOLUMES and the
+    # nodes form the distributed erasure set together.
+    - api: environment.control.RedeployContainersByGroup
       nodeGroup: cp
+      useExistingVolumes: true
 
   attachPublicIp:
     # AttachExtIp is PER-NODE (verified: jelastic-jps/rio, docker addons).
