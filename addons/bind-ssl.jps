@@ -21,16 +21,27 @@ id: rustfs-domains-ssl
 name: "RustFS Domains & SSL"
 baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
 
-settings:
-  fields:
-    - name: domains
-      type: string
-      caption: "Domains — S3 first, console second, comma-separated"
-      tooltip: "e.g. s3.example.com,console.s3.example.com (console is optional)"
-      required: true
+# Bind the add-on to the NGINX LB layer so its button shows in the bl node's
+# Add-Ons tab (where TLS lives). A button (not onInstall) makes it a persistent,
+# re-runnable action instead of a one-shot that vanishes after import.
+targetNodes:
+  nodeGroup: bl
 
-onInstall:
-  - bindSsl
+settings:
+  main:
+    fields:
+      - name: domains
+        type: string
+        caption: "Domains — S3 first, console second, comma-separated"
+        tooltip: "e.g. s3.example.com,console.s3.example.com (console is optional)"
+        required: true
+
+buttons:
+  - caption: Issue / Renew SSL
+    action: bindSsl
+    settings: main
+    loadingText: Issuing Let's Encrypt certificates and enabling HTTPS...
+    successText: text/ssl-success.md
 
 actions:
   bindSsl:

@@ -24,6 +24,10 @@ globals:
   DATA_DIR: /data
   S3_PORT: 9000
 
+# Show the Change Version button in the RustFS (cp) node's Add-Ons tab.
+targetNodes:
+  nodeGroup: cp
+
 settings:
   main:
     fields:
