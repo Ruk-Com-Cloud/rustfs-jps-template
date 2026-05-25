@@ -105,6 +105,11 @@ settings:
             caption: Your S3 domain (e.g. s3.example.com)
             vtype: domain
             required: false
+          - name: consoleDomain
+            type: string
+            caption: Console domain (optional, e.g. console.s3.example.com)
+            vtype: domain
+            required: false
 
 # ---------------------------------------------------------------------
 # Explicit NGINX LB node (bl) is MANDATORY: the Let's Encrypt add-on cannot
@@ -165,25 +170,75 @@ actions:
       user: root
 
   buildCluster:
-    # EXPERIMENTAL (PRD D3 risk acceptance). RustFS distributed needs the
-    # IDENTICAL RUSTFS_VOLUMES on every node = http://<addr>:9000/data list
-    # (verified: rustfs .docker/compose/docker-compose.cluster.yaml).
-    # [VERIFY-LIVE] node address resolution + erasure-set formation;
-    # RustFS distributed is beta-unstable (rustfs#2248).
+    # EXPERIMENTAL (PRD D3 risk acceptance). RustFS distributed = ONE erasure
+    # set built from an explicit, space-separated list of every cp node's
+    # endpoint. Verified against rustfs config_test.rs: N space-separated
+    # volumes -> 1 pool / 1 set / N drives (legacy layout) — NO ellipsis and NO
+    # sequential hostnames required. Jelastic intra-env DNS resolves node<id>,
+    # so we address peers by hostname (stable across IP changes).
+    #
+    # RUSTFS_VOLUMES must be (a) IDENTICAL on every node and (b) delivered as the
+    # CONTAINER env: rustfs entrypoint.sh reads ${RUSTFS_VOLUMES} from the
+    # process env and does NOT source /etc/environment. So we set it via
+    # AddContainerEnvVars (writes the Docker env) then redeploy to apply.
+    # [VERIFY-LIVE] erasure-set formation; RustFS distributed is beta (rustfs#2248).
+    # Build the peer list from the platform-resolved cp node IDs (reliable at
+    # onInstall) rather than a runtime GetEnvInfo call, which returned 0 cp nodes
+    # in testing. ${nodes.cp.join(id,)} -> "87815,87816,..." (jelastic-jps/wildfly
+    # precedent). Each id maps to the Jelastic-resolvable hostname node<id>.
     - script: |
-        var info = jelastic.env.control.GetEnvInfo('${env.name}', session);
-        var vols = [];
-        for (var i = 0; i < info.nodes.length; i++)
-          if (info.nodes[i].nodeGroup === 'cp')
-            vols.push('http://' + info.nodes[i].address + ':${globals.S3_PORT}${globals.DATA_DIR}');
+        var raw = "${nodes.cp.join(id,)}";
+        var ids = raw.split(',').filter(function (x) { return x.length > 0; });
+        var vols = ids.map(function (id) {
+          return 'http://node' + id + ':${globals.S3_PORT}${globals.DATA_DIR}';
+        });
+        if (vols.length < 2)
+          return { result: 1, error: 'buildCluster: expected >=2 cp nodes, got [' + raw + ']' };
         return { result: 0, volumes: vols.join(' ') };
-    - setGlobals:
-        CLUSTER_VOLUMES: ${response.volumes}
+    # Set the SAME volume list as the real container env on every cp node.
+    - env.control.AddContainerEnvVars[cp]:
+        vars: {"RUSTFS_VOLUMES": "${response.volumes}"}
+    # Form the erasure set. On EVERY cp at once: stop the single-node instance,
+    # wipe its single-node format, then relaunch rustfs DETACHED reading the
+    # distributed RUSTFS_VOLUMES from /.jelenv (written by AddContainerEnvVars).
+    #
+    # Why a direct detached launch and NOT an API restart (all live-proven
+    # 2026-05-25, env-3959245 / 9806772):
+    #  - RestartNodesByGroup runs `jem service restart` INSIDE the container and
+    #    this minimal rustfs image has no `jem` -> "sh: jem: not found" on every cp.
+    #  - RedeployContainersByGroup recreates containers SEQUENTIALLY (~100s/node);
+    #    rustfs FATALs after ~10 retries (~130s) when it can't reach a quorum of
+    #    peers ("store init failed to load formats ... erasure read quorum"), so
+    #    staggered starts never get >2 nodes up together and the set never forms.
+    # A detached launch RETURNS IMMEDIATELY, so all cp bring rustfs up within
+    # seconds (even if cmd dispatch is per-node) -> overlapping retry windows ->
+    # the 4 drives format ONE xl erasure set together (matching pool id, all
+    # health/ready=200). Detach via `( ... </dev/null >/dev/null 2>&1 & )`: a
+    # Jelastic cmd has no controlling TTY, so the orphaned process gets no SIGHUP
+    # and survives the action; rustfs writes its own logs to /logs. Run as uid
+    # 10001 via `chroot --userspec` (busybox setpriv has no --reuid; no
+    # su/runuser exist) so the on-disk format is rustfs-owned and a later managed
+    # restart can read it. Parse /.jelenv with cut (NOT `.`/source: it stores
+    # docker env-file lines with unquoted space-containing values, so sourcing
+    # runs the 2nd RUSTFS_VOLUMES URL as a command; and NOT ${var%%=*} parameter
+    # expansion: Jelastic eats ${...} at parse time). Safe: install-time, new env.
     - cmd[cp]: |-
-        echo "RUSTFS_VOLUMES='${globals.CLUSTER_VOLUMES}'" >> /etc/environment
+        pkill -9 rustfs 2>/dev/null || true
+        sleep 1
+        find /data -mindepth 1 -delete 2>/dev/null || true
+        chown -R 10001:10001 /data /logs
+        while IFS= read -r line; do
+          case "$line" in
+            RUSTFS_*=*)
+              k=$(printf "%s" "$line" | cut -d= -f1)
+              v=$(printf "%s" "$line" | cut -d= -f2-)
+              export "$k=$v" ;;
+          esac
+        done < /.jelenv
+        cd /
+        ( chroot --userspec=10001:10001 / /usr/bin/rustfs $RUSTFS_VOLUMES </dev/null >/dev/null 2>&1 & )
+        echo "launched distributed rustfs (uid 10001) on $(hostname): $RUSTFS_VOLUMES"
       user: root
-    - api: environment.control.RestartContainersByGroup
-      nodeGroup: cp
 
   attachPublicIp:
     # AttachExtIp is PER-NODE (verified: jelastic-jps/rio, docker addons).
@@ -204,13 +259,54 @@ actions:
         curl -fsSL '${baseUrl}/nginx/s3-proxy.inc?_r=${fn.random}' \
           | sed "s|__CP_HOST__|${nodes.cp.address}|g; s|__S3_PORT__|${globals.S3_PORT}|g" \
           > /etc/nginx/conf.d/s3-proxy.inc
+        # webroot for the Let's Encrypt HTTP-01 challenge (Phase-2 Bind SSL).
+        # The acme-challenge location MUST be served as a file, NOT proxied to
+        # S3 — otherwise the LE check hits the S3 API and 403s (live-confirmed).
+        mkdir -p /usr/share/nginx/html/.well-known/acme-challenge
         cat > /etc/nginx/conf.d/s3-proxy.conf <<'EOF'
         server {
             listen 80;
             server_name ${env.domain} ${settings.externalDomain};
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
             include /etc/nginx/conf.d/s3-proxy.inc;
         }
         EOF
+        # Optional console subdomain over HTTP (Bind SSL later upgrades it to 443).
+        # Console (:9001) serves BOTH the UI (/rustfs/console/) and the S3/STS API
+        # at /, so the bare-/ redirect to the UI must apply to BROWSERS only (no
+        # Authorization header) — a blanket redirect breaks the signed STS login
+        # POST that the console fires at / (live-confirmed: 302 -> login fails).
+        if [ -n "${settings.consoleDomain}" ]; then
+        cat > /etc/nginx/conf.d/console.conf <<'EOF'
+        server {
+            listen 80;
+            server_name ${settings.consoleDomain};
+            merge_slashes off;
+            ignore_invalid_headers off;
+            client_max_body_size 0;
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            location = / {
+                if ($http_authorization = "") { return 302 /rustfs/console/; }
+                proxy_pass http://${nodes.cp.address}:${globals.CONSOLE_PORT};
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            location / {
+                proxy_pass http://${nodes.cp.address}:${globals.CONSOLE_PORT};
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+            }
+        }
+        EOF
+        fi
         nginx -t && nginx -s reload
       user: root
     # [VERIFY-LIVE] confirm conf.d path + LE :443 coexistence.
@@ -232,19 +328,37 @@ actions:
     # API (some builds need a console external-S3-URL setting).
 
 success:
+  # Jelastic also emails this text on install — keep it informative but lean:
+  # a long success COMBINED with a separate `email:` block + multiline
+  # `description` once triggered result:99 (hibernate DataException) at finalize
+  # on region proenhn. So we enhance `success` only and ship NO `email:` block.
   text: |
-    **RustFS S3 is ready.** Keep these credentials safe.
+    **RustFS S3 is ready (HTTP).** Save these credentials now — shown once.
 
-    **S3 endpoint (path-style):** http://${env.domain}/
     **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
     **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
-    **Disk quota:** ${settings.diskSize:50} GB per node
+    **Disk:** ${settings.diskSize:50} GB/node · Topology: ${settings.topology:single}
 
-    **Admin dashboard:** http://node${nodes.cp.master.id}-${env.domain}:${globals.CONSOLE_PUBLIC_PORT}/ (login with the keys above).
+    **1) Map DNS — A record, DNS-ONLY (NO proxy).** Point each domain to the
+    Load Balancer IP **${nodes.bl.extIPs}**. Keep the proxy OFF (Cloudflare =
+    grey cloud / "DNS only"); a proxied record blocks the Let's Encrypt check.
+      • S3 API : ${settings.externalDomain:s3.example.com} → ${nodes.bl.extIPs}
+      • Console: ${settings.consoleDomain:console.s3.example.com} → ${nodes.bl.extIPs}
 
-    **AWS CLI:**
+    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "Let's Encrypt Free SSL"** and paste this into the Domains field (S3 first, console second):
+    `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
+    It issues free Let's Encrypt certs and switches the endpoints to HTTPS.
+
+    **3) Use it — AWS CLI (after SSL):**
     `aws configure set default.s3.addressing_style path`
-    `aws --endpoint-url http://${env.domain} s3 mb s3://my-bucket`
-    `aws --endpoint-url http://${env.domain} s3 cp file s3://my-bucket/`
+    `aws configure set default.s3.signature_version s3v4`
+    `aws configure set aws_access_key_id ${globals.RUSTFS_ACCESS_KEY}`
+    `aws configure set aws_secret_access_key ${globals.RUSTFS_SECRET_KEY}`
+    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 mb s3://my-bucket`
+    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 cp ./file s3://my-bucket/`
 
-    **HTTPS on your domain:** point your domain's DNS **A record** to the Load Balancer public IP **${nodes.bl.extIPs}**, wait for propagation, then open Add-Ons -> "Bind SSL". Full guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
+    **Console:** https://${settings.consoleDomain:console.s3.example.com}/ (login with the keys above).
+
+    No custom domain yet? S3 over HTTP now: http://${env.domain}/ (set `signature_version s3v4` + path-style). Console: Add-Ons → Endpoints.
+
+    Guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
