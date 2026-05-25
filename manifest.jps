@@ -345,7 +345,7 @@ success:
       • S3 API : ${settings.externalDomain:s3.example.com} → ${nodes.bl.extIPs}
       • Console: ${settings.consoleDomain:console.s3.example.com} → ${nodes.bl.extIPs}
 
-    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "Let's Encrypt Free SSL"** and paste this into the Domains field (S3 first, console second):
+    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "RustFS Domains & SSL"** (this env's own add-on — NOT the platform "Let's Encrypt") and paste this into the Domains field (S3 first, console second):
     `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
     It issues free Let's Encrypt certs and switches the endpoints to HTTPS.
 
@@ -362,3 +362,199 @@ success:
     No custom domain yet? S3 over HTTP now: http://${env.domain}/ (set `signature_version s3v4` + path-style). Console: Add-Ons → Endpoints.
 
     Guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
+
+# Embedded add-ons appear in the env's Add-Ons tab automatically (no import) and
+# inherit the manifest globals/baseUrl. A distinct name ("RustFS Domains & SSL")
+# avoids users accidentally running the platform's own "Let's Encrypt" add-on,
+# which issues a cert but enables a generic :443 vhost (not SigV4-safe, and it
+# does not know our console subdomain).
+addons:
+  - id: rustfs-domains-ssl
+    name: RustFS Domains & SSL
+    description: >-
+      Issue free Let's Encrypt certificates and switch the S3 endpoint (and an
+      optional console subdomain) to HTTPS. Point DNS first: an A record,
+      DNS-only (NO Cloudflare proxy) to the Load Balancer IP.
+    settings:
+      main:
+        fields:
+          - name: domains
+            type: string
+            caption: "Domains — S3 first, console second, comma-separated"
+            tooltip: "e.g. s3.example.com,console.s3.example.com (console optional)"
+            required: true
+    buttons:
+      - caption: Issue / Renew SSL
+        action: bindSsl
+        settings: main
+        loadingText: Issuing Let's Encrypt certificates and enabling HTTPS...
+        successText: text/ssl-success.md
+    actions:
+      # Phase-2 HTTPS on the NGINX LB via acme.sh HTTP-01 webroot (configureLB
+      # already serves /.well-known/acme-challenge/ on :80). Default RSA cert
+      # (NO --keylength ec / --install-cert --ecc: a live run issued RSA while
+      # --ecc looked in <domain>_ecc -> install failed). S3 :443 reuses the
+      # shared SigV4-safe s3-proxy.inc; the optional console :443 proxies to
+      # cp:9001 (derived from s3-proxy.inc, no node placeholder needed) and the
+      # bare-/ -> /rustfs/console/ redirect is gated on "no Authorization" so it
+      # never intercepts the signed STS login POST. server_name comes from a
+      # split bash var -> UNQUOTED heredoc (bash $VARS expand, nginx vars \$).
+      bindSsl:
+        - cmd[bl]: |-
+            ACME=/root/.acme.sh/acme.sh
+            [ -x "$ACME" ] || curl -s https://get.acme.sh | sh -s email=${user.email}
+            mkdir -p /etc/nginx/ssl /usr/share/nginx/html/.well-known/acme-challenge
+            CP=$(grep -oE 'http://[0-9.]+:9000' /etc/nginx/conf.d/s3-proxy.inc 2>/dev/null | head -1 | sed 's|http://||; s|:9000||')
+            [ -n "$CP" ] || { echo "RustFS backend IP not found in s3-proxy.inc — was this env installed by the template?"; exit 1; }
+            DOMAINS="${settings.domains}"
+            S3_DOMAIN=$(printf '%s' "$DOMAINS" | awk -F, '{print $1}' | tr -d '[:space:]')
+            CONSOLE_DOMAIN=$(printf '%s' "$DOMAINS" | awk -F, '{print $2}' | tr -d '[:space:]')
+            [ -n "$S3_DOMAIN" ] || { echo "No S3 domain. e.g. s3.example.com,console.s3.example.com"; exit 1; }
+            LBIP=$(curl -fsSL -4 ifconfig.me 2>/dev/null || true)
+            R=$(dig +short "$S3_DOMAIN" | tail -n1)
+            if [ -n "$LBIP" ] && [ -n "$R" ] && [ "$R" != "$LBIP" ]; then
+              echo "DNS $S3_DOMAIN -> $R, but this LB is $LBIP. Set an A record (DNS-ONLY/no proxy) to $LBIP, then re-run."; exit 1
+            fi
+            issue_install() {
+              mkdir -p /etc/nginx/ssl
+              "$ACME" --issue -d "$1" -w /usr/share/nginx/html --server letsencrypt || true
+              "$ACME" --install-cert -d "$1" --key-file /etc/nginx/ssl/"$2".key --fullchain-file /etc/nginx/ssl/"$2".crt --reloadcmd "nginx -s reload"
+              [ -s /etc/nginx/ssl/"$2".crt ]
+            }
+            if ! issue_install "$S3_DOMAIN" s3; then echo "Let's Encrypt failed for $S3_DOMAIN (DNS/propagation/CAA?)."; exit 1; fi
+            cat > /etc/nginx/conf.d/ssl-s3.conf <<EOF
+            server {
+                listen 443 ssl;
+                http2 on;
+                server_name $S3_DOMAIN;
+                ssl_certificate /etc/nginx/ssl/s3.crt;
+                ssl_certificate_key /etc/nginx/ssl/s3.key;
+                ssl_protocols TLSv1.2 TLSv1.3;
+                location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+                include /etc/nginx/conf.d/s3-proxy.inc;
+            }
+            EOF
+            if [ -n "$CONSOLE_DOMAIN" ]; then
+              if ! issue_install "$CONSOLE_DOMAIN" console; then echo "Let's Encrypt failed for $CONSOLE_DOMAIN (DNS/propagation/CAA?)."; exit 1; fi
+            cat > /etc/nginx/conf.d/console.conf <<EOF
+            server {
+                listen 80;
+                server_name $CONSOLE_DOMAIN;
+                location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+                location / { return 301 https://\$host\$request_uri; }
+            }
+            server {
+                listen 443 ssl;
+                http2 on;
+                server_name $CONSOLE_DOMAIN;
+                ssl_certificate /etc/nginx/ssl/console.crt;
+                ssl_certificate_key /etc/nginx/ssl/console.key;
+                ssl_protocols TLSv1.2 TLSv1.3;
+                merge_slashes off;
+                ignore_invalid_headers off;
+                client_max_body_size 0;
+                location = / {
+                    if (\$http_authorization = "") { return 302 /rustfs/console/; }
+                    proxy_pass http://$CP:9001;
+                    proxy_set_header Host \$host;
+                }
+                location / {
+                    proxy_pass http://$CP:9001;
+                    proxy_http_version 1.1;
+                    proxy_set_header Host \$host;
+                    proxy_set_header X-Real-IP \$remote_addr;
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto \$scheme;
+                    proxy_set_header Upgrade \$http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                }
+            }
+            EOF
+            fi
+            nginx -t && nginx -s reload
+          user: root
+        - assert:
+            - condition: "${response.responses.exitStatus} === 0"
+              message: "SSL bind failed. Most common cause: the domain's A record
+                        is not pointed at this LB's public IP yet, or it is
+                        proxied (Cloudflare orange-cloud). Set it DNS-ONLY,
+                        confirm with `dig +short <domain>`, then run again."
+
+  - id: rustfs-change-version
+    name: Change Version
+    description: >-
+      Back up, then redeploy RustFS to a tested version keeping volume data.
+      Roll back by running again and selecting the previous version.
+    settings:
+      main:
+        fields:
+          # Keep in sync with configs/vers.yaml rustfs_allowlist (tested tags
+          # only — FR-5.1; NEVER latest on the prod path).
+          - name: targetTag
+            type: list
+            caption: Target RustFS version (tested tags only)
+            values:
+              1.0.0-beta.3: RustFS 1.0.0-beta.3 (tested 2026-05-14)
+            default: 1.0.0-beta.3
+            required: true
+    buttons:
+      - caption: Change Version
+        action: changeVersion
+        settings: main
+        confirmText: |
+          A full backup is taken FIRST. The container is then redeployed to the
+          selected version with volume data preserved. If anything fails you can
+          roll back by running this again and selecting the previous version.
+          Proceed?
+        loadingText: Backing up and changing version...
+        successText: text/upgrade-success.md
+    actions:
+      changeVersion:
+        - backupCp
+        - api: environment.control.RedeployContainersByGroup
+          nodeGroup: cp
+          tag: ${globals.rustfs_image_repo}:${this.targetTag}
+          useExistingVolumes: true
+      backupCp:
+        # Snapshot /data into the persistent /backups volume; keep last 5.
+        # Preflight free space so we fail fast instead of stranding a partial
+        # archive. Shell uses bare $VAR / $(...) — only ${globals.*} use braces.
+        - cmd[cp]: |-
+            TS=$(date +%Y%m%d-%H%M%S)
+            mkdir -p /backups
+            NEED_KB=$(du -sk ${globals.DATA_DIR} | awk '{print $1}')
+            FREE_KB=$(df -Pk /backups | awk 'NR==2{print $4}')
+            [ -z "$NEED_KB" ] && NEED_KB=1
+            [ -z "$FREE_KB" ] && FREE_KB=0
+            if [ "$FREE_KB" -lt "$NEED_KB" ]; then
+              echo "Not enough space for a pre-upgrade snapshot: need ~$NEED_KB KB free in /backups, have $FREE_KB KB. Increase the node disk size or remove old /backups archives, then retry."
+              exit 1
+            fi
+            ARCHIVE=/backups/rustfs-pre-upgrade-$TS.tgz
+            if ! tar czf "$ARCHIVE" -C ${globals.DATA_DIR} .; then
+              rm -f "$ARCHIVE"
+              echo "Pre-upgrade snapshot failed while writing $ARCHIVE"; exit 1
+            fi
+            echo "snapshot: $ARCHIVE"
+            ls -1t /backups/rustfs-pre-upgrade-*.tgz 2>/dev/null | tail -n +6 | xargs -r rm -f
+          user: root
+        - assert:
+            - condition: "${response.responses.exitStatus} === 0"
+              message: "Pre-upgrade backup FAILED — aborting before redeploy.
+                        Free disk space or increase the node disk size, then retry."
+      onBeforeRedeployContainer [cp, useExistingVolumes:true]:
+        - cmd[cp]: sync
+          user: root
+      onAfterRedeployContainer [cp]:
+        - cmd[cp]: |-
+            for i in $(seq 1 30); do
+              curl -fsS "http://127.0.0.1:${globals.S3_PORT}/health/ready" >/dev/null 2>&1 && exit 0
+              sleep 2
+            done
+            echo "RustFS readiness check failed after upgrade"; exit 1
+          user: root
+        - assert:
+            - condition: "${response.responses.exitStatus} === 0"
+              message: "Upgrade readiness check FAILED. Data was backed up
+                        (/backups) and volumes preserved — roll back by running
+                        Change Version again selecting the previous version."
