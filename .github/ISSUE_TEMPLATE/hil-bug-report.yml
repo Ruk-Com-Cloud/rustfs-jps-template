@@ -1,0 +1,62 @@
+name: HIL Bug Report
+description: Report a failure found while testing the RustFS S3 JPS template (human-in-the-loop).
+title: "[HIL] <short summary>"
+labels: ["HIL", "bug"]
+body:
+  - type: input
+    id: testcase
+    attributes:
+      label: Test case
+      description: Which test case from the HIL Test Plan?
+      placeholder: "e.g. TC5 — cluster S3 multipart"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version under test
+      value: "v0.0.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: topology
+    attributes:
+      label: Topology
+      options:
+        - single
+        - cluster
+        - n/a
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment (name / LB public IP / region)
+      placeholder: "env-XXXXXX / 203.0.113.10 / proen"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Deploy from the v0.0.1 URL with topology=cluster, 4 nodes, ...
+        2. Run Add-Ons -> "RustFS Domains & SSL" with ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result (paste the exact error / attach screenshot)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Install/Add-Ons task log, and if you have SSH: node /var/log/run.log, /logs/rustfs.log, /root/.acme.sh/acme.sh.log"
+      render: shell
