@@ -217,35 +217,47 @@ actions:
     # Set the SAME volume list as the real container env on every cp node.
     - env.control.AddContainerEnvVars[cp]:
         vars: {"RUSTFS_VOLUMES": "${response.volumes}"}
-    # Fresh-format the drives for distributed mode. The nodes first booted in
-    # single-node mode (RUSTFS_VOLUMES=/data) and wrote a single-node format to
-    # /data (.rustfs.sys/format.json + pool.bin). RustFS refuses to form an
-    # erasure set over a pre-existing single-node format — it FATALs with
-    # "inconsistent drive found" (verified live). Stop the single instance (the
-    # launcher does NOT respawn it) and wipe /data so the post-restart
-    # distributed boot initializes a clean erasure set. Safe: this runs only at
-    # install on a brand-new env, before any user data exists.
+    # Form the erasure set. On EVERY cp at once: stop the single-node instance,
+    # wipe its single-node format, then relaunch rustfs DETACHED reading the
+    # distributed RUSTFS_VOLUMES from /.jelenv (written by AddContainerEnvVars).
+    #
+    # Why a direct detached launch and NOT an API restart (all live-proven
+    # 2026-05-25, env-3959245 / 9806772):
+    #  - RestartNodesByGroup runs `jem service restart` INSIDE the container and
+    #    this minimal rustfs image has no `jem` -> "sh: jem: not found" on every cp.
+    #  - RedeployContainersByGroup recreates containers SEQUENTIALLY (~100s/node);
+    #    rustfs FATALs after ~10 retries (~130s) when it can't reach a quorum of
+    #    peers ("store init failed to load formats ... erasure read quorum"), so
+    #    staggered starts never get >2 nodes up together and the set never forms.
+    # A detached launch RETURNS IMMEDIATELY, so all cp bring rustfs up within
+    # seconds (even if cmd dispatch is per-node) -> overlapping retry windows ->
+    # the 4 drives format ONE xl erasure set together (matching pool id, all
+    # health/ready=200). Detach via `( ... </dev/null >/dev/null 2>&1 & )`: a
+    # Jelastic cmd has no controlling TTY, so the orphaned process gets no SIGHUP
+    # and survives the action; rustfs writes its own logs to /logs. Run as uid
+    # 10001 via `chroot --userspec` (busybox setpriv has no --reuid; no
+    # su/runuser exist) so the on-disk format is rustfs-owned and a later managed
+    # restart can read it. Parse /.jelenv with cut (NOT `.`/source: it stores
+    # docker env-file lines with unquoted space-containing values, so sourcing
+    # runs the 2nd RUSTFS_VOLUMES URL as a command; and NOT ${var%%=*} parameter
+    # expansion: Jelastic eats ${...} at parse time). Safe: install-time, new env.
     - cmd[cp]: |-
         pkill -9 rustfs 2>/dev/null || true
+        sleep 1
         find /data -mindepth 1 -delete 2>/dev/null || true
-        chown -R 10001:10001 /data
+        chown -R 10001:10001 /data /logs
+        while IFS= read -r line; do
+          case "$line" in
+            RUSTFS_*=*)
+              k=$(printf "%s" "$line" | cut -d= -f1)
+              v=$(printf "%s" "$line" | cut -d= -f2-)
+              export "$k=$v" ;;
+          esac
+        done < /.jelenv
+        cd /
+        ( chroot --userspec=10001:10001 / /usr/bin/rustfs $RUSTFS_VOLUMES </dev/null >/dev/null 2>&1 & )
+        echo "launched distributed rustfs (uid 10001) on $(hostname): $RUSTFS_VOLUMES"
       user: root
-    # Recreate the cp containers so they relaunch reading the new /.jelenv env
-    # (RUSTFS_VOLUMES = distributed list) on the clean drives, forming the
-    # erasure set together. RedeployContainersByGroup is the platform's blessed
-    # way to APPLY an AddContainerEnvVars change (gitlab/wildfly precedent).
-    # RestartNodesByGroup CANNOT be used here — it runs `jem service restart`
-    # INSIDE the container and our minimal rustfs image has no `jem` (live:
-    # "sh: jem: not found" on every cp). `tag` is the VERSION ONLY (Jelastic
-    # prepends the node's repo); passing a full repo:tag yields repo:repo:tag ->
-    # "invalid reference format". useExistingVolumes keeps the (wiped) /data.
-    # Live-proven 2026-05-25 (env-9806772): once the distributed RUSTFS_VOLUMES
-    # is in the container env and /data is clean, all 4 nodes form ONE xl
-    # erasure set (matching pool id, health 200, S3 API live & enforcing auth).
-    - api: environment.control.RedeployContainersByGroup
-      nodeGroup: cp
-      tag: ${globals.rustfs_default_tag}
-      useExistingVolumes: true
     # [DBG-cluster] TEMPORARY self-diagnostics — remove after cluster verified
     # (single cleanup: grep -n '\[DBG-cluster\]' manifest.jps). Runs on EVERY cp
     # after the distributed restart and dumps the live state into the install log
