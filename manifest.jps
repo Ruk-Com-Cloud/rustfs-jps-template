@@ -333,32 +333,26 @@ success:
   # `description` once triggered result:99 (hibernate DataException) at finalize
   # on region proenhn. So we enhance `success` only and ship NO `email:` block.
   text: |
-    **RustFS S3 is ready (HTTP).** Save these credentials now — shown once.
+    **RustFS S3 is ready.** Save these credentials now — shown only once.
 
     **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
     **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
-    **Disk:** ${settings.diskSize:50} GB/node · Topology: ${settings.topology:single}
+    **S3 endpoint (HTTP):** http://${env.domain}/
 
-    **1) Map DNS — A record, DNS-ONLY (NO proxy).** Point each domain to the
-    Load Balancer IP **${nodes.bl.extIPs}**. Keep the proxy OFF (Cloudflare =
-    grey cloud / "DNS only"); a proxied record blocks the Let's Encrypt check.
-      • S3 API : ${settings.externalDomain:s3.example.com} → ${nodes.bl.extIPs}
-      • Console: ${settings.consoleDomain:console.s3.example.com} → ${nodes.bl.extIPs}
+    **Enable HTTPS on your domain**
 
-    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "RustFS Domains & SSL"** (this env's own add-on — NOT the platform "Let's Encrypt") and paste this into the Domains field (S3 first, console second):
-    `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
-    It issues free Let's Encrypt certs and switches the endpoints to HTTPS.
+    **1.** Add an **A record — DNS only, no proxy** → Load Balancer **${nodes.bl.extIPs}**
+       • S3:      ${settings.externalDomain:s3.example.com}
+       • Console: ${settings.consoleDomain:console.s3.example.com}   (optional)
 
-    **3) Use it — AWS CLI (after SSL):**
+    **2.** On the **Load Balancer**, open **Add-Ons → "RustFS Domains & SSL"** and paste:
+       `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
+
+    It issues free Let's Encrypt certs → S3 **https://${settings.externalDomain:s3.example.com}** · console **https://${settings.consoleDomain:console.s3.example.com}/**
+
+    **Connect (AWS CLI)** — path-style + SigV4 are required:
     `aws configure set default.s3.addressing_style path`
     `aws configure set default.s3.signature_version s3v4`
-    `aws configure set aws_access_key_id ${globals.RUSTFS_ACCESS_KEY}`
-    `aws configure set aws_secret_access_key ${globals.RUSTFS_SECRET_KEY}`
-    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 mb s3://my-bucket`
-    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 cp ./file s3://my-bucket/`
+    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 ls`
 
-    **Console:** https://${settings.consoleDomain:console.s3.example.com}/ (login with the keys above).
-
-    No custom domain yet? S3 over HTTP now: http://${env.domain}/ (set `signature_version s3v4` + path-style). Console: Add-Ons → Endpoints.
-
-    Guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
+    Docs, upgrade & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
