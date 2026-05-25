@@ -19,7 +19,7 @@
 type: update
 id: rustfs-domains-ssl
 name: "RustFS Domains & SSL"
-baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/v0.0.1
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
 
 # Bind the add-on to the NGINX LB layer so its button shows in the bl node's
 # Add-Ons tab (where TLS lives). A button (not onInstall) makes it a persistent,
@@ -45,17 +45,21 @@ buttons:
 
 actions:
   bindSsl:
-    # Issue + bind on the NGINX LB via acme.sh HTTP-01 webroot (the LB :80 serves
-    # /.well-known/acme-challenge/ from /usr/share/nginx/html, set by configureLB).
-    # Console port is the RustFS default 9001 (this standalone JPS has no access
-    # to the main manifest globals). The :443 server_name comes from a split bash
-    # var, so the nginx vhosts use an UNQUOTED heredoc: bash $VARS expand, nginx
-    # vars are escaped \$, and Jelastic ${...} placeholders are already resolved
-    # at parse time (so ${nodes.cp.address} is a literal IP by runtime).
+    # Issue + bind on the NGINX LB via acme.sh HTTP-01 webroot. The cp backend IP
+    # is read from s3-proxy.inc (written by configureLB) instead of a node
+    # placeholder, so it resolves regardless of add-on context. Console port is
+    # the RustFS default 9001. Default RSA cert (NO --keylength ec / --ecc: a live
+    # run issued RSA while --install-cert --ecc looked in <domain>_ecc -> "cannot
+    # find path" -> abort). nginx vhosts use an UNQUOTED heredoc: bash $VARS
+    # expand, nginx vars are escaped \$.
     - cmd[bl]: |-
         ACME=/root/.acme.sh/acme.sh
         [ -x "$ACME" ] || curl -s https://get.acme.sh | sh -s email=${user.email}
         mkdir -p /etc/nginx/ssl /usr/share/nginx/html/.well-known/acme-challenge
+
+        # RustFS backend IP from the SigV4-safe include configureLB wrote.
+        CP=$(grep -oE 'http://[0-9.]+:9000' /etc/nginx/conf.d/s3-proxy.inc 2>/dev/null | head -1 | sed 's|http://||; s|:9000||')
+        [ -n "$CP" ] || { echo "RustFS backend not found in s3-proxy.inc — install this env from the template first."; exit 1; }
 
         DOMAINS="${settings.domains}"
         S3_DOMAIN=$(printf '%s' "$DOMAINS" | awk -F, '{print $1}' | tr -d '[:space:]')
@@ -71,13 +75,26 @@ actions:
           exit 1
         fi
 
+        # Make :80 serve the ACME challenge for EACH domain BEFORE issuing, so
+        # issuance does not depend on the domain having been entered at install.
+        # S3: append the domain to the existing s3-proxy.conf server_name if absent
+        # (that vhost already has the acme-challenge location). Console: (re)write
+        # a :80 vhost with the challenge location + a plain proxy.
+        grep -q "$S3_DOMAIN" /etc/nginx/conf.d/s3-proxy.conf 2>/dev/null || \
+          sed -i "/server_name /s/;/ $S3_DOMAIN;/" /etc/nginx/conf.d/s3-proxy.conf
+        if [ -n "$CONSOLE_DOMAIN" ]; then
+        cat > /etc/nginx/conf.d/console.conf <<EOF
+        server {
+            listen 80;
+            server_name $CONSOLE_DOMAIN;
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            location / { proxy_pass http://$CP:9001; proxy_set_header Host \$host; }
+        }
+        EOF
+        fi
+        nginx -t && nginx -s reload
+
         issue_install() {  # $1=domain  $2=cert basename
-          # Default RSA cert (NO --keylength ec / NO --install-cert --ecc): a
-          # live run issued RSA into /root/.acme.sh/<domain> while --install-cert
-          # --ecc looked in /root/.acme.sh/<domain>_ecc -> "cannot find path" ->
-          # install failed and the add-on exited before writing the vhosts. RSA
-          # is fine for TLS; keeping issue+install on the same (default) key type
-          # removes the mismatch.
           mkdir -p /etc/nginx/ssl
           "$ACME" --issue -d "$1" -w /usr/share/nginx/html --server letsencrypt || true
           "$ACME" --install-cert -d "$1" \
@@ -129,7 +146,7 @@ actions:
             client_max_body_size 0;
             location = / {
                 if (\$http_authorization = "") { return 302 /rustfs/console/; }
-                proxy_pass http://${nodes.cp.address}:9001;
+                proxy_pass http://$CP:9001;
                 proxy_http_version 1.1;
                 proxy_set_header Host \$host;
                 proxy_set_header X-Real-IP \$remote_addr;
@@ -137,7 +154,7 @@ actions:
                 proxy_set_header X-Forwarded-Proto \$scheme;
             }
             location / {
-                proxy_pass http://${nodes.cp.address}:9001;
+                proxy_pass http://$CP:9001;
                 proxy_http_version 1.1;
                 proxy_set_header Host \$host;
                 proxy_set_header X-Real-IP \$remote_addr;
