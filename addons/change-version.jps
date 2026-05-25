@@ -13,7 +13,7 @@
 type: update
 id: rustfs-change-version
 name: Change Version
-baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/v0.0.2
 
 # Standalone add-on: it must define the globals its actions reference (a plain
 # import has NO access to the main manifest's globals). rustfs_image_repo comes
