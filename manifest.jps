@@ -230,13 +230,22 @@ actions:
         find /data -mindepth 1 -delete 2>/dev/null || true
         chown -R 10001:10001 /data
       user: root
-    # Restart the cp nodes so the launcher (-e /.jelenv) re-reads the env that
-    # AddContainerEnvVars wrote and rustfs boots distributed on the clean drives,
-    # forming the erasure set together. RestartNodesByGroup (NOT Redeploy) — no
-    # image pull, no tag (opensearch-cluster uses this exact call to form its
-    # cluster).
-    - api: environment.control.RestartNodesByGroup
+    # Recreate the cp containers so they relaunch reading the new /.jelenv env
+    # (RUSTFS_VOLUMES = distributed list) on the clean drives, forming the
+    # erasure set together. RedeployContainersByGroup is the platform's blessed
+    # way to APPLY an AddContainerEnvVars change (gitlab/wildfly precedent).
+    # RestartNodesByGroup CANNOT be used here — it runs `jem service restart`
+    # INSIDE the container and our minimal rustfs image has no `jem` (live:
+    # "sh: jem: not found" on every cp). `tag` is the VERSION ONLY (Jelastic
+    # prepends the node's repo); passing a full repo:tag yields repo:repo:tag ->
+    # "invalid reference format". useExistingVolumes keeps the (wiped) /data.
+    # Live-proven 2026-05-25 (env-9806772): once the distributed RUSTFS_VOLUMES
+    # is in the container env and /data is clean, all 4 nodes form ONE xl
+    # erasure set (matching pool id, health 200, S3 API live & enforcing auth).
+    - api: environment.control.RedeployContainersByGroup
       nodeGroup: cp
+      tag: ${globals.rustfs_default_tag}
+      useExistingVolumes: true
     # [DBG-cluster] TEMPORARY self-diagnostics — remove after cluster verified
     # (single cleanup: grep -n '\[DBG-cluster\]' manifest.jps). Runs on EVERY cp
     # after the distributed restart and dumps the live state into the install log
