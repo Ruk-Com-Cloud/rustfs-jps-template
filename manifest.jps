@@ -105,6 +105,11 @@ settings:
             caption: Your S3 domain (e.g. s3.example.com)
             vtype: domain
             required: false
+          - name: consoleDomain
+            type: string
+            caption: Console domain (optional, e.g. console.s3.example.com)
+            vtype: domain
+            required: false
 
 # ---------------------------------------------------------------------
 # Explicit NGINX LB node (bl) is MANDATORY: the Let's Encrypt add-on cannot
@@ -338,19 +343,35 @@ actions:
     # API (some builds need a console external-S3-URL setting).
 
 success:
+  # Jelastic also emails this text on install — keep it informative but lean:
+  # a long success COMBINED with a separate `email:` block + multiline
+  # `description` once triggered result:99 (hibernate DataException) at finalize
+  # on region proenhn. So we enhance `success` only and ship NO `email:` block.
   text: |
-    **RustFS S3 is ready.** Keep these credentials safe.
+    **RustFS S3 is ready (HTTP).** Save these credentials now — shown once.
 
-    **S3 endpoint (path-style):** http://${env.domain}/
     **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
     **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
-    **Disk quota:** ${settings.diskSize:50} GB per node
+    **Disk:** ${settings.diskSize:50} GB/node · Topology: ${settings.topology:single}
 
-    **Admin dashboard:** http://node${nodes.cp.master.id}-${env.domain}:${globals.CONSOLE_PUBLIC_PORT}/ (login with the keys above).
+    **1) Map DNS — A record, DNS-ONLY (NO proxy).** Point each domain to the
+    Load Balancer IP **${nodes.bl.extIPs}**. Keep the proxy OFF (Cloudflare =
+    grey cloud / "DNS only"); a proxied record blocks the Let's Encrypt check.
+      • S3 API : ${settings.externalDomain:s3.example.com} → ${nodes.bl.extIPs}
+      • Console: ${settings.consoleDomain:console.s3.example.com} → ${nodes.bl.extIPs}
 
-    **AWS CLI:**
+    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "Bind SSL / Issue Certificate"** and enter the same domain(s). It issues Let's Encrypt certs and switches the endpoints to HTTPS.
+
+    **3) Use it — AWS CLI (after SSL):**
     `aws configure set default.s3.addressing_style path`
-    `aws --endpoint-url http://${env.domain} s3 mb s3://my-bucket`
-    `aws --endpoint-url http://${env.domain} s3 cp file s3://my-bucket/`
+    `aws configure set default.s3.signature_version s3v4`
+    `aws configure set aws_access_key_id ${globals.RUSTFS_ACCESS_KEY}`
+    `aws configure set aws_secret_access_key ${globals.RUSTFS_SECRET_KEY}`
+    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 mb s3://my-bucket`
+    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 cp ./file s3://my-bucket/`
 
-    **HTTPS on your domain:** point your domain's DNS **A record** to the Load Balancer public IP **${nodes.bl.extIPs}**, wait for propagation, then open Add-Ons -> "Bind SSL". Full guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
+    **Console:** https://${settings.consoleDomain:console.s3.example.com}/ (login with the keys above).
+
+    No custom domain yet? S3 over HTTP now: http://${env.domain}/ (set `signature_version s3v4` + path-style). Console: Add-Ons → Endpoints.
+
+    Guide & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
