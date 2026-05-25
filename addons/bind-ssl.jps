@@ -19,7 +19,7 @@
 type: update
 id: rustfs-domains-ssl
 name: "RustFS Domains & SSL"
-baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/v0.0.1
 
 # Bind the add-on to the NGINX LB layer so its button shows in the bl node's
 # Add-Ons tab (where TLS lives). A button (not onInstall) makes it a persistent,
