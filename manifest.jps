@@ -401,7 +401,9 @@ success:
       • S3 API : ${settings.externalDomain:s3.example.com} → ${nodes.bl.extIPs}
       • Console: ${settings.consoleDomain:console.s3.example.com} → ${nodes.bl.extIPs}
 
-    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "Bind SSL / Issue Certificate"** and enter the same domain(s). It issues Let's Encrypt certs and switches the endpoints to HTTPS.
+    **2) Enable HTTPS.** After DNS propagates (check: `dig +short ${settings.externalDomain:s3.example.com}` = ${nodes.bl.extIPs}), open **Add-Ons → "Let's Encrypt Free SSL"** and paste this into the Domains field (S3 first, console second):
+    `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
+    It issues free Let's Encrypt certs and switches the endpoints to HTTPS.
 
     **3) Use it — AWS CLI (after SSL):**
     `aws configure set default.s3.addressing_style path`
