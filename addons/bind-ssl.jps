@@ -1,0 +1,149 @@
+# "RustFS Domains & SSL" add-on (PRD FR-3.5). type:update — apply to an
+# EXISTING env AFTER pointing DNS at the LB public IP. Import this JPS onto the
+# env, paste the domain(s), and it runs immediately (onInstall). Re-import to
+# re-issue / change domain (acme.sh installs its own renewal cron on the LB).
+#
+# One field, comma-separated: the S3 domain FIRST, the optional console domain
+# SECOND (e.g. "s3.example.com,console.s3.example.com"). The install success
+# page prints the exact string to copy here.
+#
+# Mechanism (live-validated 2026-05-26 on env-1940195): the official Jelastic
+# Let's Encrypt add-on does NOT generate our SigV4-safe vhost and its challenge
+# collides with our :80 S3 proxy. We issue certs directly with acme.sh (HTTP-01
+# webroot) on the LB and write our own :443 vhosts: S3 reuses the shared
+# SigV4-safe include (nginx/s3-proxy.inc, written by configureLB); the optional
+# console subdomain proxies to the RustFS console on cp:9001, which serves BOTH
+# the UI (/rustfs/console/) and the S3/STS API at / — so the bare-/ redirect to
+# the UI is gated on "no Authorization header" (browsers only); a blanket
+# redirect breaks the signed STS login POST to / (live-confirmed).
+type: update
+id: rustfs-domains-ssl
+name: "RustFS Domains & SSL"
+baseUrl: https://raw.githubusercontent.com/Ruk-Com-Cloud/rustfs-jps-template/main
+
+settings:
+  fields:
+    - name: domains
+      type: string
+      caption: "Domains — S3 first, console second, comma-separated"
+      tooltip: "e.g. s3.example.com,console.s3.example.com (console is optional)"
+      required: true
+
+onInstall:
+  - bindSsl
+
+actions:
+  bindSsl:
+    # Issue + bind on the NGINX LB via acme.sh HTTP-01 webroot (the LB :80 serves
+    # /.well-known/acme-challenge/ from /usr/share/nginx/html, set by configureLB).
+    # Console port is the RustFS default 9001 (this standalone JPS has no access
+    # to the main manifest globals). The :443 server_name comes from a split bash
+    # var, so the nginx vhosts use an UNQUOTED heredoc: bash $VARS expand, nginx
+    # vars are escaped \$, and Jelastic ${...} placeholders are already resolved
+    # at parse time (so ${nodes.cp.address} is a literal IP by runtime).
+    - cmd[bl]: |-
+        ACME=/root/.acme.sh/acme.sh
+        [ -x "$ACME" ] || curl -s https://get.acme.sh | sh -s email=${user.email}
+        mkdir -p /etc/nginx/ssl /usr/share/nginx/html/.well-known/acme-challenge
+
+        DOMAINS="${settings.domains}"
+        S3_DOMAIN=$(printf '%s' "$DOMAINS" | awk -F, '{print $1}' | tr -d '[:space:]')
+        CONSOLE_DOMAIN=$(printf '%s' "$DOMAINS" | awk -F, '{print $2}' | tr -d '[:space:]')
+        [ -n "$S3_DOMAIN" ] || { echo "No S3 domain. Enter e.g. s3.example.com,console.s3.example.com"; exit 1; }
+
+        # Fail fast with a clear message if DNS is not (yet) pointed here.
+        LBIP=$(curl -fsSL -4 ifconfig.me 2>/dev/null || true)
+        R=$(dig +short "$S3_DOMAIN" | tail -n1)
+        if [ -n "$LBIP" ] && [ -n "$R" ] && [ "$R" != "$LBIP" ]; then
+          echo "DNS $S3_DOMAIN -> $R, but this LB is $LBIP."
+          echo "Set an A record (DNS-ONLY / no proxy) to $LBIP, let it propagate, then re-run."
+          exit 1
+        fi
+
+        issue_install() {  # $1=domain  $2=cert basename
+          # Default RSA cert (NO --keylength ec / NO --install-cert --ecc): a
+          # live run issued RSA into /root/.acme.sh/<domain> while --install-cert
+          # --ecc looked in /root/.acme.sh/<domain>_ecc -> "cannot find path" ->
+          # install failed and the add-on exited before writing the vhosts. RSA
+          # is fine for TLS; keeping issue+install on the same (default) key type
+          # removes the mismatch.
+          mkdir -p /etc/nginx/ssl
+          "$ACME" --issue -d "$1" -w /usr/share/nginx/html --server letsencrypt || true
+          "$ACME" --install-cert -d "$1" \
+            --key-file /etc/nginx/ssl/"$2".key --fullchain-file /etc/nginx/ssl/"$2".crt \
+            --reloadcmd "nginx -s reload"
+          [ -s /etc/nginx/ssl/"$2".crt ]
+        }
+
+        # --- S3 endpoint :443 (reuses the shared SigV4-safe include) ---
+        if ! issue_install "$S3_DOMAIN" s3; then
+          echo "Let's Encrypt failed for $S3_DOMAIN (DNS/propagation/CAA?)."; exit 1
+        fi
+        cat > /etc/nginx/conf.d/ssl-s3.conf <<EOF
+        server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+            http2 on;
+            server_name $S3_DOMAIN;
+            ssl_certificate     /etc/nginx/ssl/s3.crt;
+            ssl_certificate_key /etc/nginx/ssl/s3.key;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            include /etc/nginx/conf.d/s3-proxy.inc;
+        }
+        EOF
+
+        # --- Console subdomain :443 (optional, second CSV field) ---
+        if [ -n "$CONSOLE_DOMAIN" ]; then
+          if ! issue_install "$CONSOLE_DOMAIN" console; then
+            echo "Let's Encrypt failed for $CONSOLE_DOMAIN (DNS/propagation/CAA?)."; exit 1
+          fi
+        cat > /etc/nginx/conf.d/console.conf <<EOF
+        server {
+            listen 80;
+            server_name $CONSOLE_DOMAIN;
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            location / { return 301 https://\$host\$request_uri; }
+        }
+        server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+            http2 on;
+            server_name $CONSOLE_DOMAIN;
+            ssl_certificate     /etc/nginx/ssl/console.crt;
+            ssl_certificate_key /etc/nginx/ssl/console.key;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            merge_slashes off;
+            ignore_invalid_headers off;
+            client_max_body_size 0;
+            location = / {
+                if (\$http_authorization = "") { return 302 /rustfs/console/; }
+                proxy_pass http://${nodes.cp.address}:9001;
+                proxy_http_version 1.1;
+                proxy_set_header Host \$host;
+                proxy_set_header X-Real-IP \$remote_addr;
+                proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto \$scheme;
+            }
+            location / {
+                proxy_pass http://${nodes.cp.address}:9001;
+                proxy_http_version 1.1;
+                proxy_set_header Host \$host;
+                proxy_set_header X-Real-IP \$remote_addr;
+                proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto \$scheme;
+                proxy_set_header Upgrade \$http_upgrade;
+                proxy_set_header Connection "upgrade";
+            }
+        }
+        EOF
+        fi
+
+        nginx -t && nginx -s reload
+      user: root
+    - assert:
+        - condition: "${response.responses.exitStatus} === 0"
+          message: "SSL bind failed. Most common cause: the domain's A record is
+                    not pointed at this LB's public IP yet, or it is proxied
+                    (Cloudflare orange-cloud). Set the A record DNS-ONLY (no
+                    proxy), confirm with `dig +short <domain>`, then re-import."
