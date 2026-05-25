@@ -159,6 +159,13 @@ onInstall:
       - attachPublicIp
   - configureLB
   - addConsoleEndpoint
+  # Register the embedded add-ons so they appear in the env's Add-Ons tab.
+  # Declaring them under `addons:` is NOT enough — an add-on only shows up once
+  # it is installed, via installAddon (or a node `addons:` reference).
+  - installAddon:
+      id: rustfs-domains-ssl
+  - installAddon:
+      id: rustfs-change-version
 
 actions:
   setupRustFS:
