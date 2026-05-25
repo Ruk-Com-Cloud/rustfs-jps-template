@@ -315,13 +315,54 @@ actions:
         curl -fsSL '${baseUrl}/nginx/s3-proxy.inc?_r=${fn.random}' \
           | sed "s|__CP_HOST__|${nodes.cp.address}|g; s|__S3_PORT__|${globals.S3_PORT}|g" \
           > /etc/nginx/conf.d/s3-proxy.inc
+        # webroot for the Let's Encrypt HTTP-01 challenge (Phase-2 Bind SSL).
+        # The acme-challenge location MUST be served as a file, NOT proxied to
+        # S3 — otherwise the LE check hits the S3 API and 403s (live-confirmed).
+        mkdir -p /usr/share/nginx/html/.well-known/acme-challenge
         cat > /etc/nginx/conf.d/s3-proxy.conf <<'EOF'
         server {
             listen 80;
             server_name ${env.domain} ${settings.externalDomain};
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
             include /etc/nginx/conf.d/s3-proxy.inc;
         }
         EOF
+        # Optional console subdomain over HTTP (Bind SSL later upgrades it to 443).
+        # Console (:9001) serves BOTH the UI (/rustfs/console/) and the S3/STS API
+        # at /, so the bare-/ redirect to the UI must apply to BROWSERS only (no
+        # Authorization header) — a blanket redirect breaks the signed STS login
+        # POST that the console fires at / (live-confirmed: 302 -> login fails).
+        if [ -n "${settings.consoleDomain}" ]; then
+        cat > /etc/nginx/conf.d/console.conf <<'EOF'
+        server {
+            listen 80;
+            server_name ${settings.consoleDomain};
+            merge_slashes off;
+            ignore_invalid_headers off;
+            client_max_body_size 0;
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            location = / {
+                if ($http_authorization = "") { return 302 /rustfs/console/; }
+                proxy_pass http://${nodes.cp.address}:${globals.CONSOLE_PORT};
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            location / {
+                proxy_pass http://${nodes.cp.address}:${globals.CONSOLE_PORT};
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+            }
+        }
+        EOF
+        fi
         nginx -t && nginx -s reload
       user: root
     # [VERIFY-LIVE] confirm conf.d path + LE :443 coexistence.

@@ -1,13 +1,23 @@
 # Phase-2 SSL bind add-on (PRD FR-3.5). type:update — apply to an EXISTING env
 # AFTER pointing DNS at the LB public IP. Import this JPS onto the env, enter
-# the domain, and it runs immediately (onInstall). Re-import to re-issue /
-# change domain (Let's Encrypt also auto-renews via cron).
+# the domain(s), and it runs immediately (onInstall). Re-import to re-issue /
+# change domain (acme.sh installs its own renewal cron on the LB).
 #
-# The official Let's Encrypt add-on does NOT write our HTTPS vhost (verified:
-# ssl-manager.js delegates :443 to jem ssl / SLB BindSSL). We pass our own JS
-# deployHook (scripts/deployHook.js) which the add-on runs post-issue AND on
-# every ~30-day renewal — it writes the :443 server block including the shared
-# SigV4-safe contract (nginx/s3-proxy.inc).
+# Mechanism (live-validated 2026-05-26 on env-1940195): the official Jelastic
+# Let's Encrypt add-on does NOT generate our SigV4-safe vhost and its challenge
+# path collides with our :80 S3 proxy. We issue certs directly with acme.sh
+# (HTTP-01 webroot) on the LB and write our own :443 vhosts that reuse the
+# shared SigV4-safe include (nginx/s3-proxy.inc, written by configureLB) for S3
+# and a SigV4-safe console proxy for the optional console subdomain.
+#
+# PREREQUISITES on the env (created by the main manifest's configureLB):
+#   - /etc/nginx/conf.d/s3-proxy.inc                 (SigV4-safe S3 include)
+#   - /etc/nginx/conf.d/s3-proxy.conf  with a        (acme-challenge webroot on :80)
+#     `location ^~ /.well-known/acme-challenge/`
+# The console subdomain :443 proxies to the RustFS console on cp:9001, which
+# serves BOTH the console UI (/rustfs/console/) and the S3/STS API at / — so the
+# bare-/ redirect to the UI is gated on "no Authorization header" (browsers
+# only); a blanket redirect breaks the signed STS login POST (live-confirmed).
 type: update
 id: rustfs-bind-ssl
 name: Bind SSL / Issue Certificate
@@ -20,38 +30,114 @@ settings:
       caption: S3 domain to secure (e.g. s3.example.com)
       vtype: domain
       required: true
+    - name: consoleDomain
+      type: string
+      caption: Console domain (optional, e.g. console.s3.example.com)
+      vtype: domain
+      required: false
 
 onInstall:
   - bindSsl
 
 actions:
   bindSsl:
-    # 1) Verify the domain resolves to this env's public IP BEFORE issuing
-    #    (Let's Encrypt needs reachability first). Safe to re-run.
+    # Issue + bind on the NGINX LB. acme.sh HTTP-01 webroot (the LB :80 already
+    # serves /.well-known/acme-challenge/ from /usr/share/nginx/html). Console
+    # port is the RustFS default 9001. NOTE: this is a standalone JPS — it has no
+    # access to the main manifest globals, so the console port is literal here.
+    # bash uses bare $VAR / $(...) only — Jelastic eats ${...} at parse time;
+    # the only ${...} below are Jelastic placeholders (settings/nodes/user).
     - cmd[bl]: |-
-        RESOLVED=$(dig +short ${settings.externalDomain} | tail -n1)
-        MYIP=$(curl -fsSL -4 ifconfig.me || true)
-        echo "resolved=$RESOLVED myip=$MYIP"
-        test -n "$RESOLVED" && test "$RESOLVED" = "$MYIP"
+        ACME=/root/.acme.sh/acme.sh
+        [ -x "$ACME" ] || curl -s https://get.acme.sh | sh -s email=${user.email}
+        mkdir -p /etc/nginx/ssl /usr/share/nginx/html/.well-known/acme-challenge
+
+        # Fail fast with a clear message if DNS is not (yet) pointed here.
+        LBIP=$(curl -fsSL -4 ifconfig.me 2>/dev/null || true)
+        R=$(dig +short ${settings.externalDomain} | tail -n1)
+        if [ -n "$LBIP" ] && [ -n "$R" ] && [ "$R" != "$LBIP" ]; then
+          echo "DNS ${settings.externalDomain} -> $R, but this LB is $LBIP."
+          echo "Set an A record (DNS-ONLY / no proxy) to $LBIP, let it propagate, then re-run."
+          exit 1
+        fi
+
+        issue_install() {  # $1=domain  $2=cert basename
+          "$ACME" --issue -d "$1" -w /usr/share/nginx/html --server letsencrypt --keylength ec-256 || true
+          "$ACME" --install-cert -d "$1" --ecc \
+            --key-file /etc/nginx/ssl/"$2".key --fullchain-file /etc/nginx/ssl/"$2".crt \
+            --reloadcmd "nginx -s reload"
+          [ -s /etc/nginx/ssl/"$2".crt ]
+        }
+
+        # --- S3 endpoint :443 (reuses the shared SigV4-safe include) ---
+        if ! issue_install "${settings.externalDomain}" s3; then
+          echo "Let's Encrypt failed for ${settings.externalDomain} (DNS/propagation/CAA?)."; exit 1
+        fi
+        cat > /etc/nginx/conf.d/ssl-s3.conf <<'EOF'
+        server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+            http2 on;
+            server_name ${settings.externalDomain};
+            ssl_certificate     /etc/nginx/ssl/s3.crt;
+            ssl_certificate_key /etc/nginx/ssl/s3.key;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            include /etc/nginx/conf.d/s3-proxy.inc;
+        }
+        EOF
+
+        # --- Console subdomain :443 (optional) ---
+        if [ -n "${settings.consoleDomain}" ]; then
+          if ! issue_install "${settings.consoleDomain}" console; then
+            echo "Let's Encrypt failed for ${settings.consoleDomain} (DNS/propagation/CAA?)."; exit 1
+          fi
+        cat > /etc/nginx/conf.d/console.conf <<'EOF'
+        server {
+            listen 80;
+            server_name ${settings.consoleDomain};
+            location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
+            location / { return 301 https://$host$request_uri; }
+        }
+        server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+            http2 on;
+            server_name ${settings.consoleDomain};
+            ssl_certificate     /etc/nginx/ssl/console.crt;
+            ssl_certificate_key /etc/nginx/ssl/console.key;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            merge_slashes off;
+            ignore_invalid_headers off;
+            client_max_body_size 0;
+            location = / {
+                if ($http_authorization = "") { return 302 /rustfs/console/; }
+                proxy_pass http://${nodes.cp.address}:9001;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            location / {
+                proxy_pass http://${nodes.cp.address}:9001;
+                proxy_http_version 1.1;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+            }
+        }
+        EOF
+        fi
+
+        nginx -t && nginx -s reload
       user: root
     - assert:
         - condition: "${response.responses.exitStatus} === 0"
-          message: "DNS for ${settings.externalDomain} does not resolve to this
-                    environment's public IP yet. Fix the A record, wait for
-                    propagation (dig +short ${settings.externalDomain}), re-import."
-
-    # 2) Issue + bind the cert via the official Let's Encrypt add-on bound to the
-    #    NGINX LB. email auto from ${user.email}. customDomains + our deployHook.
-    - install:
-        jps: https://raw.githubusercontent.com/jelastic-jps/lets-encrypt/master/manifest.jps?_r=${fn.random}
-        nodeGroup: bl
-        settings:
-          customDomains: ${settings.externalDomain}
-          deployHook: ${baseUrl}/scripts/deployHook.js?_r=${fn.random}
-          deployHookType: js
-          undeployHook: ${baseUrl}/scripts/deployHook.js?_r=${fn.random}
-          undeployHookType: js
-    # [VERIFY-LIVE] (first live run): cert issues; deployHook writes/reloads the
-    # :443 vhost; AND port 443 is reachable (if the platform firewall blocks 443
-    # like it did 9001, the LE add-on's platform BindSSL path may be needed
-    # instead of a raw nginx :443 — adjust after observing this run).
+          message: "SSL bind failed. Most common cause: the domain's A record is
+                    not pointed at this LB's public IP yet, or it is proxied
+                    (Cloudflare orange-cloud). Set an A record DNS-ONLY (no
+                    proxy), confirm with `dig +short <domain>`, then re-import."
