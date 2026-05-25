@@ -59,11 +59,14 @@ actions:
     # 1) Mandatory backup BEFORE any change (FR-5.2 / NFR-1 hard gate).
     - backupCp
     # 2) In-place redeploy to the chosen tested tag, PRESERVING volume data.
-    #    Verified method: environment.control.RedeployContainersByGroup
-    #    (params: nodeGroup, tag, useExistingVolumes:boolean).
+    #    environment.control.RedeployContainersByGroup (nodeGroup, tag,
+    #    useExistingVolumes). `tag` is the VERSION ONLY — Jelastic keeps the
+    #    node's existing repo and appends this tag. Passing a full repo:tag
+    #    yields repo:repo:tag -> "invalid reference format" (same failure
+    #    buildCluster hit at 8338562).
     - api: environment.control.RedeployContainersByGroup
       nodeGroup: cp
-      tag: ${globals.rustfs_image_repo}:${this.targetTag}
+      tag: ${this.targetTag}
       useExistingVolumes: true
 
   backupCp:
