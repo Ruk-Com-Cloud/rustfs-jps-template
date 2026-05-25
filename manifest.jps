@@ -152,7 +152,6 @@ nodes:
       # correct without it (setting it can break the console, rustfs#887).
 
 onInstall:
-  - debugAccess
   - setupRustFS
   - if ('${settings.topology}' == 'cluster'):
       - buildCluster
@@ -162,29 +161,6 @@ onInstall:
   - addConsoleEndpoint
 
 actions:
-  # [DBG-access] TEMPORARY — give every cp node a public IP and inject the
-  # debug SSH key on every node so the forming cluster can be inspected live.
-  # bl receives its public IP via the normal attachPublicIp flow. The value is
-  # a PUBLIC key (not a secret). Remove together with the [DBG-cluster] block
-  # once the cluster is verified (cleanup: grep -n '\[DBG-' manifest.jps).
-  # bash uses bare $VAR only — Jelastic eats ${...} at parse time.
-  debugAccess:
-    - forEach(node:nodes.cp):
-        - api: environment.binder.AttachExtIp
-          nodeid: ${@node.id}
-    - cmd[cp]: |-
-        mkdir -p /root/.ssh && chmod 700 /root/.ssh
-        K="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP2I76RXccPMChcVzrLl0dNlOZV59UHfp3cEwM1rV/9o warut.c@ruk-com.in.th"
-        grep -qF "$K" /root/.ssh/authorized_keys 2>/dev/null || echo "$K" >> /root/.ssh/authorized_keys
-        chmod 600 /root/.ssh/authorized_keys
-      user: root
-    - cmd[bl]: |-
-        mkdir -p /root/.ssh && chmod 700 /root/.ssh
-        K="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP2I76RXccPMChcVzrLl0dNlOZV59UHfp3cEwM1rV/9o warut.c@ruk-com.in.th"
-        grep -qF "$K" /root/.ssh/authorized_keys 2>/dev/null || echo "$K" >> /root/.ssh/authorized_keys
-        chmod 600 /root/.ssh/authorized_keys
-      user: root
-
   setupRustFS:
     # RustFS runs non-root UID/GID 10001 (verified Dockerfile) — data dir
     # must be owned by 10001:10001.
@@ -262,38 +238,6 @@ actions:
         cd /
         ( chroot --userspec=10001:10001 / /usr/bin/rustfs $RUSTFS_VOLUMES </dev/null >/dev/null 2>&1 & )
         echo "launched distributed rustfs (uid 10001) on $(hostname): $RUSTFS_VOLUMES"
-      user: root
-    # [DBG-cluster] TEMPORARY self-diagnostics — remove after cluster verified
-    # (single cleanup: grep -n '\[DBG-cluster\]' manifest.jps). Runs on EVERY cp
-    # after the distributed restart and dumps the live state into the install log
-    # so the failure can be localized without SSH. Distinguishes the ranked
-    # hypotheses: argv shows whether rustfs booted the distributed list or fell
-    # back to /data (respawn/env); format.json shows clean vs single-node format;
-    # peer health shows cp<->cp :9000 reachability; run.log tail shows the actual
-    # error / "waiting for peers" / formed. Always exits 0 (never fails install).
-    # NOTE: bash uses bare $VAR / $(...) only — Jelastic eats ${...} at parse.
-    - cmd[cp]: |-
-        sleep 30
-        mkdir -p /root/.ssh && chmod 700 /root/.ssh
-        K="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP2I76RXccPMChcVzrLl0dNlOZV59UHfp3cEwM1rV/9o warut.c@ruk-com.in.th"
-        grep -qF "$K" /root/.ssh/authorized_keys 2>/dev/null || echo "$K" >> /root/.ssh/authorized_keys
-        chmod 600 /root/.ssh/authorized_keys
-        P="[DBG-cluster]"
-        echo "$P ==== node=$(hostname) ===="
-        echo "$P jelenv: $(grep RUSTFS_VOLUMES /.jelenv 2>/dev/null)"
-        PID=$(pgrep -n rustfs || true)
-        echo "$P rustfs pid=$PID"
-        if [ -n "$PID" ]; then echo "$P argv: $(tr '\0' ' ' < /proc/$PID/cmdline 2>/dev/null)"; fi
-        echo "$P data: $(ls -a /data 2>/dev/null | tr '\n' ' ')"
-        echo "$P format: $(head -c 600 /data/.rustfs.sys/format.json 2>/dev/null || echo NONE)"
-        echo "$P local-health: $(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/health/ready 2>/dev/null || echo UNREACH)"
-        for u in $(grep RUSTFS_VOLUMES /.jelenv 2>/dev/null | grep -oE 'node[0-9]+:9000'); do
-          echo "$P peer $u: $(curl -fsS -o /dev/null -w '%{http_code}' --connect-timeout 3 http://$u/health/ready 2>/dev/null || echo UNREACH)"
-        done
-        echo "$P --- run.log tail ---"
-        tail -n 60 /var/log/run.log 2>/dev/null || tail -n 60 /var/log/*.log 2>/dev/null || echo "$P no logs"
-        echo "$P ==== end ===="
-        true
       user: root
 
   attachPublicIp:
