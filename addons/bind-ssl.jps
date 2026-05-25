@@ -61,8 +61,15 @@ actions:
         fi
 
         issue_install() {  # $1=domain  $2=cert basename
-          "$ACME" --issue -d "$1" -w /usr/share/nginx/html --server letsencrypt --keylength ec-256 || true
-          "$ACME" --install-cert -d "$1" --ecc \
+          # Default RSA cert (NO --keylength ec / NO --install-cert --ecc): a
+          # live run issued RSA into /root/.acme.sh/<domain> while --install-cert
+          # --ecc looked in /root/.acme.sh/<domain>_ecc -> "cannot find path" ->
+          # install failed and the add-on exited before writing the vhosts. RSA
+          # is fine for TLS; keeping issue+install on the same (default) key type
+          # removes the mismatch.
+          mkdir -p /etc/nginx/ssl
+          "$ACME" --issue -d "$1" -w /usr/share/nginx/html --server letsencrypt || true
+          "$ACME" --install-cert -d "$1" \
             --key-file /etc/nginx/ssl/"$2".key --fullchain-file /etc/nginx/ssl/"$2".crt \
             --reloadcmd "nginx -s reload"
           [ -s /etc/nginx/ssl/"$2".crt ]
