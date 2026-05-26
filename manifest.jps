@@ -159,6 +159,14 @@ onInstall:
       - attachPublicIp
   - configureLB
   - addConsoleEndpoint
+  # Branch the success body + (no-public-IP) flip Jelastic built-in SSL on so
+  # S3 is reachable over https://${env.domain}. The console endpoint is a raw
+  # TCP forwarder on the shared SLB, so it stays HTTP — surface that clearly.
+  - if ('${settings.attachPublicIp}' == 'true'):
+      - setSuccessVarsPublicIp
+  - if ('${settings.attachPublicIp}' == 'false'):
+      - enableBuiltinSsl
+      - setSuccessVarsNoPublicIp
 
 actions:
   setupRustFS:
@@ -327,6 +335,57 @@ actions:
     # [VERIFY-LIVE] console UI loads on the endpoint URL and can reach the S3
     # API (some builds need a console external-S3-URL setting).
 
+  enableBuiltinSsl:
+    # No-public-IP path: turn on Jelastic shared SSL so S3 is reachable at
+    # https://${env.domain}. The shared SLB terminates TLS and forwards to our
+    # nginx LB :80 (where SigV4 is preserved). The console runs via an SLB
+    # Endpoint (raw TCP) on a high port — Jelastic shared SSL does NOT cover
+    # endpoints, so the console URL stays HTTP. The Bind SSL add-on is the
+    # right tool for HTTPS on the console (needs a public IP + custom domain).
+    - api: environment.control.EditEnvSettings
+      envName: ${env.envName}
+      settings: '{"sslstate":true}'
+    # [VERIFY-LIVE] some regions require sslstateExt or per-LB SSL toggle;
+    # confirm https://${env.domain}/ serves S3 after install on csthhn.
+
+  setSuccessVarsPublicIp:
+    # Public-IP path: keep the original DNS + Bind-SSL add-on flow.
+    - setGlobals:
+        S3_PUBLIC_URL: http://${env.domain}/
+        HTTPS_GUIDE: |-
+          **Enable HTTPS on your domain**
+
+          **1.** Add an **A record — DNS only, no proxy** → Load Balancer **${nodes.bl.extIPs}**
+             • S3:      ${settings.externalDomain:s3.example.com}
+             • Console: ${settings.consoleDomain:console.s3.example.com}   (optional)
+
+          **2.** On the **Load Balancer**, open **Add-Ons → "RustFS Domains & SSL"** and paste:
+             `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
+
+          It issues free Let's Encrypt certs → S3 **https://${settings.externalDomain:s3.example.com}** · console **https://${settings.consoleDomain:console.s3.example.com}/**
+
+          **Connect (AWS CLI)** — path-style + SigV4 are required:
+          `aws configure set default.s3.addressing_style path`
+          `aws configure set default.s3.signature_version s3v4`
+          `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 ls`
+
+  setSuccessVarsNoPublicIp:
+    # No-public-IP path: built-in SSL on env.domain for S3; endpoint URL (HTTP)
+    # for the console (Jelastic SLB endpoints are TCP forwarders — no SSL).
+    - setGlobals:
+        S3_PUBLIC_URL: https://${env.domain}/
+        HTTPS_GUIDE: |-
+          **Console (admin UI)** — Jelastic endpoint, HTTP only:
+          http://node${nodes.cp.master.id}-${env.domain}:${globals.CONSOLE_PUBLIC_PORT}/
+          (No public IP attached → the console is exposed via a shared-SLB TCP endpoint, which does NOT support HTTPS. For HTTPS on the console, attach a public IP + use the Bind SSL add-on.)
+
+          **S3 is served over Jelastic built-in SSL** at **https://${env.domain}/**.
+
+          **Connect (AWS CLI)** — path-style + SigV4 are required:
+          `aws configure set default.s3.addressing_style path`
+          `aws configure set default.s3.signature_version s3v4`
+          `aws --endpoint-url https://${env.domain} s3 ls`
+
 success:
   # Jelastic also emails this text on install — keep it informative but lean:
   # a long success COMBINED with a separate `email:` block + multiline
@@ -337,22 +396,8 @@ success:
 
     **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
     **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
-    **S3 endpoint (HTTP):** http://${env.domain}/
+    **S3 endpoint:** ${globals.S3_PUBLIC_URL}
 
-    **Enable HTTPS on your domain**
-
-    **1.** Add an **A record — DNS only, no proxy** → Load Balancer **${nodes.bl.extIPs}**
-       • S3:      ${settings.externalDomain:s3.example.com}
-       • Console: ${settings.consoleDomain:console.s3.example.com}   (optional)
-
-    **2.** On the **Load Balancer**, open **Add-Ons → "RustFS Domains & SSL"** and paste:
-       `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
-
-    It issues free Let's Encrypt certs → S3 **https://${settings.externalDomain:s3.example.com}** · console **https://${settings.consoleDomain:console.s3.example.com}/**
-
-    **Connect (AWS CLI)** — path-style + SigV4 are required:
-    `aws configure set default.s3.addressing_style path`
-    `aws configure set default.s3.signature_version s3v4`
-    `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 ls`
+    ${globals.HTTPS_GUIDE}
 
     Docs, upgrade & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
