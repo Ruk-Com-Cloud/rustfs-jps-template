@@ -353,20 +353,34 @@ actions:
     - setGlobals:
         S3_PUBLIC_URL: http://${env.domain}/
         HTTPS_GUIDE: |-
-          **Enable HTTPS on your domain**
+          ---
+
+          ### Enable HTTPS on your domain
 
           **1.** Add an **A record — DNS only, no proxy** → Load Balancer **${nodes.bl.extIPs}**
-             • S3:      ${settings.externalDomain:s3.example.com}
-             • Console: ${settings.consoleDomain:console.s3.example.com}   (optional)
+
+          - S3: `${settings.externalDomain:s3.example.com}`
+          - Console: `${settings.consoleDomain:console.s3.example.com}` *(optional)*
 
           **2.** On the **Load Balancer**, open **Add-Ons → "RustFS Domains & SSL"** and paste:
-             `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
 
-          It issues free Let's Encrypt certs → S3 **https://${settings.externalDomain:s3.example.com}** · console **https://${settings.consoleDomain:console.s3.example.com}/**
+          `${settings.externalDomain:s3.example.com},${settings.consoleDomain:console.s3.example.com}`
 
-          **Connect (AWS CLI)** — path-style + SigV4 are required:
+          It issues free Let's Encrypt certs:
+
+          - S3: **https://${settings.externalDomain:s3.example.com}**
+          - Console: **https://${settings.consoleDomain:console.s3.example.com}/**
+
+          ---
+
+          ### Connect (AWS CLI)
+
+          Path-style + SigV4 are required:
+
           `aws configure set default.s3.addressing_style path`
+
           `aws configure set default.s3.signature_version s3v4`
+
           `aws --endpoint-url https://${settings.externalDomain:s3.example.com} s3 ls`
 
   setSuccessVarsNoPublicIp:
@@ -375,15 +389,34 @@ actions:
     - setGlobals:
         S3_PUBLIC_URL: https://${env.domain}/
         HTTPS_GUIDE: |-
-          **Console (admin UI)** — Jelastic endpoint, HTTP only:
+          ---
+
+          ### Console (admin UI)
+
+          Open the Jelastic endpoint (**HTTP only**):
+
           http://node${nodes.cp.master.id}-${env.domain}:${globals.CONSOLE_PUBLIC_PORT}/
-          (No public IP attached → the console is exposed via a shared-SLB TCP endpoint, which does NOT support HTTPS. For HTTPS on the console, attach a public IP + use the Bind SSL add-on.)
 
-          **S3 is served over Jelastic built-in SSL** at **https://${env.domain}/**.
+          *No public IP attached → the console is exposed via a shared-SLB TCP endpoint, which does NOT support HTTPS. For HTTPS on the console, attach a public IP + use the Bind SSL add-on.*
 
-          **Connect (AWS CLI)** — path-style + SigV4 are required:
+          ---
+
+          ### S3 over HTTPS (built-in SSL)
+
+          S3 is served over Jelastic built-in SSL at:
+
+          **https://${env.domain}/**
+
+          ---
+
+          ### Connect (AWS CLI)
+
+          Path-style + SigV4 are required:
+
           `aws configure set default.s3.addressing_style path`
+
           `aws configure set default.s3.signature_version s3v4`
+
           `aws --endpoint-url https://${env.domain} s3 ls`
 
 success:
@@ -392,12 +425,18 @@ success:
   # `description` once triggered result:99 (hibernate DataException) at finalize
   # on region proenhn. So we enhance `success` only and ship NO `email:` block.
   text: |
-    **RustFS S3 is ready.** Save these credentials now — shown only once.
+    ### RustFS S3 is ready
 
-    **Access Key:** ${globals.RUSTFS_ACCESS_KEY}
-    **Secret Key:** ${globals.RUSTFS_SECRET_KEY}
-    **S3 endpoint:** ${globals.S3_PUBLIC_URL}
+    Save these credentials now — **shown only once**.
+
+    - **Access Key:** `${globals.RUSTFS_ACCESS_KEY}`
+
+    - **Secret Key:** `${globals.RUSTFS_SECRET_KEY}`
+
+    - **S3 endpoint:** ${globals.S3_PUBLIC_URL}
 
     ${globals.HTTPS_GUIDE}
+
+    ---
 
     Docs, upgrade & rollback: https://github.com/Ruk-Com-Cloud/rustfs-jps-template
