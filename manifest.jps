@@ -266,7 +266,7 @@ actions:
         cat > /etc/nginx/conf.d/s3-proxy.conf <<'EOF'
         server {
             listen 80;
-            server_name ${env.domain} ${settings.externalDomain};
+            server_name ${env.domain} ${settings.externalDomain:};
             location ^~ /.well-known/acme-challenge/ { root /usr/share/nginx/html; default_type text/plain; }
             include /etc/nginx/conf.d/s3-proxy.inc;
         }
@@ -276,11 +276,11 @@ actions:
         # at /, so the bare-/ redirect to the UI must apply to BROWSERS only (no
         # Authorization header) — a blanket redirect breaks the signed STS login
         # POST that the console fires at / (live-confirmed: 302 -> login fails).
-        if [ -n "${settings.consoleDomain}" ]; then
+        if [ -n "${settings.consoleDomain:}" ]; then
         cat > /etc/nginx/conf.d/console.conf <<'EOF'
         server {
             listen 80;
-            server_name ${settings.consoleDomain};
+            server_name ${settings.consoleDomain:};
             merge_slashes off;
             ignore_invalid_headers off;
             client_max_body_size 0;
